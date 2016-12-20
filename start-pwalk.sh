@@ -65,6 +65,33 @@ function create_owner_table {
   psql $db_conn_str -c "CREATE TABLE $owner_tbl(path text,owner text)"
 }
 
+function create_find_owner_function {
+  psql $db_conn_str -c "CREATE OR REPLACE FUNCTION public.find_owner(_path text)
+    RETURNS text AS $$
+    DECLARE
+      my_folder text;
+      new_path text;
+      trimmed_path text;
+      my_owner text;
+    BEGIN 
+      IF _path = '/' THEN
+        my_owner := '';
+        my_folder := _path;
+        RETURN my_owner;
+      ELSE
+        trimmed_path := trim(trailing '/' from _path);
+        SELECT fo.owner INTO my_owner FROM folder_owners fo WHERE fo.path = trimmed_path;
+        IF FOUND THEN
+          RETURN my_owner;
+        END IF;
+        new_path := substring(trimmed_path,'(^.*/).*$');
+        RETURN find_owner(new_path);
+      END IF;
+    END;
+    $$
+    LANGUAGE 'plpgsql' IMMUTABLE;"
+}
+
 function create_file_metadata_table {
   psql $db_conn_str -c "CREATE TABLE $file_metadata_tbl(id serial, inode bigint, parent_inode bigint, directory_depth int, filename text, fileExtension text, UID bigint, GID bigint, st_size bigint, st_blocks bigint, st_mode text, atime double precision, mtime double precision, ctime double precision, count int, sum bigint)"
 }
@@ -138,6 +165,11 @@ sbatch --array=0-${listsize}%${queuelength} --partition=boneyard \
        --output="$output_dir/output_%a_%A.%J.out" --cpus-per-task=12 \
        --job-name="pwalker" --requeue --wrap="$pwalk_worker $csv_dir $file_metadata_tbl $folderlist"
 
-wj=$(squeue -o "%A" -h -u ${USER} -n "pwalker" -S i | tr "\n" ":")
-waitforjobs=${wj%?} #remove the last character (:) from string
-sbatch --dependency=afterok:${waitforjobs} stop-pwalk.sh $file_metadata_tbl
+num_jobs=1
+while [ num-jobs -gt 0 ]
+do
+  sleep 60
+  num=$(squeue -o "%A" -h -u ${USER} -n pwalker -S i | wc -l)
+done
+
+stop-pwalk.sh $file_metadata_tbl
