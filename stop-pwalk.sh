@@ -37,6 +37,14 @@ function create_file_metadata_view {
   psql $db_conn_str -c "CREATE VIEW file_metadata AS SELECT * FROM $file_metadata_tbl"
 }
 
+function grant_ro_table {
+  psql $db_conn_str -c "GRANT SELECT ON $1 TO storcrawl_ro"
+}
+
+function grant_ro_view {
+  psql $db_conn_str -c "GRANT SELECT ON file_metadata TO storcrawl_ro"
+}
+
 function update_run_tbl {
   psql $db_conn_str -c "INSERT INTO $run_tbl(entry, status) values('$1',$2)"
 }
@@ -49,3 +57,6 @@ update_run_tbl $file_metadata_tbl FALSE || echo "Unable to update run log table!
 echo "Updating file_metadata view"
 drop_file_metadata_view || echo "Unable to drop file_metadata view" 1>&2
 create_file_metadata_view || echo "Unable to create file_metadata view" 1>&2
+echo "Granting ro access"
+grant_ro_table $file_metadata_tbl
+grant_ro_view
