@@ -111,6 +111,7 @@ function sync_groups {
 
 function sync_owners {
   $owner_csv_cmd | psql $db_conn_str -c "COPY $owner_tbl(path,owner) FROM STDIN WITH csv"
+  psql $db_conn_str -c "GRANT SELECT ON $owner_tbl TO storcrawl_ro"
 }
 
 function update_run_tbl {
@@ -166,7 +167,7 @@ sbatch --array=0-${listsize}%${queuelength} --partition=boneyard \
        --job-name="pwalker" --requeue --wrap="$pwalk_worker $csv_dir $file_metadata_tbl $folderlist"
 
 num_jobs=1
-while [ num-jobs -gt 0 ]
+while [ $num_jobs -gt 0 ]
 do
   sleep 60
   num=$(squeue -o "%A" -h -u ${USER} -n pwalker -S i | wc -l)
