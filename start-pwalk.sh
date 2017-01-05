@@ -170,7 +170,7 @@ num_jobs=1
 while [ $num_jobs -gt 0 ]
 do
   sleep 60
-  num=$(squeue -o "%A" -h -u ${USER} -n pwalker -S i | wc -l)
+  num_jobs=$(squeue -o "%A" -h -u ${USER} -n pwalker -S i | wc -l)
 done
 
 stop-pwalk.sh $file_metadata_tbl
