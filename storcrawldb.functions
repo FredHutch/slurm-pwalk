@@ -1,0 +1,97 @@
+# print error and exit
+function error_exit {
+  echo "${PROGNAME} (tag $STORCRAWLDB_TAG): $1" 1>&2
+  exit 1
+}
+
+function usage {
+  printf "\nUsage: %s [options]\n" "$0"
+  printf "    %-18.18s  %-18.18s  %-s\n" "Param" "Value" "Description"
+  printf "  Required:\n"
+  printf "    %-18.18s  %-18.18s  %-s\n" "--config-file" "$storcrawl_config" "storcrawldb.config file"
+  printf "    %-18.18s  %-18.18s  %-s\n" "--action" "start" "start, (crawl), cleanup, list-tags, remove-tag"
+  printf "  Optional:\n"
+  printf "    %-18.18s  %-18.18s  %-s\n" "--tag" "None" "tag target if action requires"
+  printf "    %-18.18s  %-18.18s  %-s\n" "--force" "no" "set to 'yes' to remove DB view"
+  printf "  The actions are:\n"
+  printf "    start - begin a scan - this is where you would normally begin a crawl\n"
+  printf "    crawl - run pwalk on a folder - this is only called in the batch system\n"
+  printf "    cleanup - run in the batch system at the end to tidy things\n"
+  printf "    list-tags - list all tags currently in DB\n"
+  printf "    remove-tag - remove all tables related to tag specified with --tag parameter from DB\n"
+  printf "    print-log - print logs for -tag parameter from DB\n"
+  printf "    print-report - print report for -tag parameter from DB\n"
+  printf "    print-folders - print folder list for --tag parameter from DB\n"
+  printf "    print-owner-report - print space by owner report for --tag parameter from DB\n"
+  printf "\n\n"
+  exit 1
+}
+
+function run_scripts {
+  for script in ${1}/*
+  do
+    if [ -f $script -a -x $script ]
+    then
+      echo "running ${script}..."
+      $script
+      if [ "$?" -eq "0" ]
+      then
+        echo "$script ran successfully"
+      else
+        error_exit "$script failed to run"
+      fi
+    fi
+  done
+}
+
+function get_export {
+  # set pwalk_export
+  storcrawl_log "${FUNCNAME}: $1"
+  # returns device name for direct-attach storage
+  mySource=$(df --output=source "$1" | awk '! /Filesystem/ {print $1}')
+  echo $mySource | grep -q ':' 
+  if [ $? -eq 0 ]
+  then
+    pwalk_export="$(echo $mySource | awk -F: '{print $2}')"
+  else
+    pwalk_export="$(echo $mySource)"
+  fi
+}
+
+function get_server {
+  # set pwalk_server
+  storcrawl_log "${FUNCNAME}: $1"
+  myServer=$(df --output=source "$1" | awk '! /Filesystem/ {print $1}')
+  echo $myServer | grep -q ':'
+  if [ $? -eq 0 ]
+  then
+    pwalk_server="$(echo $myServer | awk -F: '{print $1}')"
+  else
+    pwalk_server="$(hostname)"
+  fi
+}
+
+function build_folder_table {
+  storcrawl_log "${FUNCNAME}"
+  # take the given path and build a folder list under it
+  echo "$STORCRAWLDB_START_PATHS" | while read d
+  do
+    storcrawl_log "${FUNCNAME}: processing $d"
+    # ugly hack for autofs homes - should probably put in config as folder list override
+    if [ "$d" == "/home" ]
+    then
+      for usr in $(ypcat -k auto.home | awk '{print $1}')
+      do
+        add_folder "/home/$usr"
+        echo "added folder /home/${usr}"
+      done
+    else
+      find "$d" -maxdepth 1 -mindepth 1 -name .snapshot -prune -o -type d -print | while read f
+      do
+        storcrawl_log "${FUNCNAME}: adding folder $f"
+        add_folder "$f"
+        echo "added folder ${f}"
+      done
+    fi
+  done
+}

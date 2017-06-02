@@ -1,0 +1,9 @@
+# ignore data and output directories
+csv_[0-9]*
+output_[0-9]*
+# ignore scripts dirs
+before_scripts.d
+after_scripts.d
+remove_scripts.d
+# our owner script
+get_owner.sh
