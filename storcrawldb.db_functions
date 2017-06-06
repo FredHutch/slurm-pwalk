@@ -143,7 +143,9 @@ function create_storcrawldb_views {
                         round(sum(sum/1024.0/1024.0/1024.0/1024.0),2) AS tb,
                         sum(count) as files
                         FROM $STORCRAWLDB_FILE_TABLE
-                        WHERE count > -1
+                        WHERE count > -1 AND
+                        owner != 'REDUNDANT' AND
+                        owner != 'UNKNOWN'
                         GROUP BY owner
                         HAVING sum(sum)>1073741824"
   psql $db_conn_str -c "GRANT SELECT ON usage_by_owner TO $db_ro_user"
@@ -166,9 +168,12 @@ function create_storcrawldb_views {
                         $STORCRAWLDB_FILE_TABLE fm,
                         uid_mapping_$STORCRAWLDB_TAG um
                         WHERE
+                        fm.owner != 'REDUNDANT' AND
+                        fm.owner != 'UNKNOWN' AND
                         fm.st_uid = um.uid AND
                         fm.count > -1 AND
-                        fm.sum > 1073741824"
+                        fm.sum > 1073741824 AND
+                        fm.filename NOT LIKE '/home/%'"
   psql $db_conn_str -c "GRANT SELECT ON big_folders TO $db_ro_user"
 }
 
