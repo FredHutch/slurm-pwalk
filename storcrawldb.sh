@@ -44,8 +44,6 @@ fi
 
 export STORCRAWLDB_TAG=${STORCRAWLDB_TAG:=$specified_tag}
 export STORCRAWLDB_START_PATH=${STORCRAWLDB_START_PATHS:=$start_paths}
-export STORCRAWLDB_STAT_TABLE=${STORCRAWLDB_STAT_TABLE:="${file_stat_tbl}${STORCRAWLDB_TAG}"}
-export STORCRAWLDB_META_TABLE=${STORCRAWLDB_META_TABLE:="${file_meta_tbl}${STORCRAWLDB_TAG}"}
 export STORCRAWLDB_FILE_TABLE=${STORCRAWLDB_FILE_TABLE:="${file_tbl}${STORCRAWLDB_TAG}"}
 export STORCRAWLDB_FOLDER_TABLE=${STORCRAWLDB_FOLDER_TABLE:="${folder_tbl}${STORCRAWLDB_TAG}"}
 export STORCRAWLDB_LOG_TABLE=${STORCRAWLDB_LOG_TABLE:="${log_tbl}${STORCRAWLDB_TAG}"}
@@ -203,16 +201,6 @@ function storcrawl_pwalk {
   #
   # [count is the count of inodes contained in the directory, or -1 if not a directory
   #  sum in the sum in bytes of all files in the directory]
-
-  # this will fail with duplicate key errors if you have an export double
-  #  mounted, which is OK as the meta table copy will work and the failure
-  #  of the stat table copy will leave one copy of each inode in the table
-  #storcrawl_log "$my_name importing stat table"
-  #cat "${STORCRAWLDB_CSV_DIR}/$csv_filename" | ${csvquote_cmd} | sort -t, -k 1,1 -n -u | uconv -s -i | awk -F, -v fs_source_id=$pwalk_source_id '{print $1","fs_source_id","$6","$7","$8","$9","$10","$11","$12","$13}' | ${csvquote_cmd} -u | psql $db_conn_str -c "COPY $STORCRAWLDB_STAT_TABLE(inode,fs_id,uid,gid,st_size,st_blocks,st_mode,atime,mtime,ctime) FROM STDIN WITH csv ESCAPE '\'"
-
-  # the metadata table
-  #storcrawl_log "$my_name importing meta table"
-  #${csvquote_cmd} "${STORCRAWLDB_CSV_DIR}/$csv_filename" | uconv -s -i | awk -F, -v owner=$my_owner -v fs_source_id=$pwalk_source_id '{print $1","fs_source_id","$2","$3","$4","$5","$14","$15","owner}' | ${csvquote_cmd} -u | psql $db_conn_str -c "COPY $STORCRAWLDB_META_TABLE(inode,fs_id,parent_inode,directory_depth,filename,fileextension,count,sum,owner) FROM STDIN WITH csv ESCAPE '\'"
 
   # importing to file table
   storcrawl_log "$my_name importing file table"

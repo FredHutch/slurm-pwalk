@@ -12,37 +12,6 @@ function create_source_table {
                           PRIMARY KEY(server, export))"
 }
 
-function create_stat_table {
-  # per crawl table of inode stat data (key: fs soure+inode)
-  psql $db_conn_str -c "CREATE TABLE IF NOT EXISTS ${STORCRAWLDB_STAT_TABLE}(
-                          inode BIGINT,
-                          fs_id INT,
-                          UID BIGINT,
-                          GID BIGINT,
-                          st_size BIGINT,
-                          st_blocks BIGINT,
-                          st_mode TEXT,
-                          atime DOUBLE PRECISION,
-                          mtime DOUBLE PRECISION,
-                          ctime DOUBLE PRECISION,
-                          primary key (inode,fs_id))"
-}
-
-function create_meta_table {
-  # per crawl table of non-stat file metdata (key: filename)
-  psql $db_conn_str -c "CREATE TABLE IF NOT EXISTS ${STORCRAWLDB_META_TABLE}(
-                          inode BIGINT,
-                          fs_id INT,
-                          parent_inode BIGINT,
-                          directory_depth INT,
-                          filename TEXT,
-                          fileextension TEXT,
-                          count INT,
-                          sum BIGINT,
-                          owner TEXT,
-                          primary key (filename))"
-}
-
 function create_file_table {
   # trying single table again
   psql $db_conn_str -c "CREATE TABLE IF NOT EXISTS ${STORCRAWLDB_FILE_TABLE}(
@@ -177,36 +146,8 @@ function create_storcrawldb_views {
   psql $db_conn_str -c "GRANT SELECT ON big_folders TO $db_ro_user"
 }
 
-#function create_storcrawldb_view {
-  ## will need update for new tables
-  #psql $db_conn_str -c "CREATE OR REPLACE VIEW $STORCRAWLDB_VIEW AS
-                          #SELECT
-                            #st.inode,
-                            #mt.parent_inode,
-                            #mt.directory_depth,
-                            #mt.filename,
-                            #mt.fileextension,
-                            #st.UID,
-                            #st.GID,
-                            #st.st_size,
-                            #st.st_blocks,
-                            #st.st_mode,
-                            #st.atime,
-                            #st.mtime,
-                            #st.ctime,
-                            #mt.count,
-                            #mt.sum
-                          #FROM
-                            #$STORCRAWLDB_STAT_TABLE st
-                          #JOIN
-                            #$STORCRAWLDB_META_TABLE mt
-                          #ON
-                            #mt.inode = st.inode;"
-#}
-
 ## roles
 function check_ro_user {
-  storcrawl_log $FUNCNAME
   my_role=$(psql $db_conn_str -t -A -F, -c "SELECT usename from pg_user where usename = '${db_ro_user}'")
   if [ -z "${my_role}" ]
   then
@@ -407,8 +348,8 @@ function init_crawl {
   done
 }
 
-function drop_tables_by_tag {
-  for i in $STORCRAWLDB_STAT_TABLE $STORCRAWLDB_META_TABLE $STORCRAWLDB_LOG_TABLE
+function drop_all_tables_for_tag {
+  for i in $source_tbl $file_tbl $folder_tbl $log_tbl $report_tbl
   do
     drop_table "$i$1"
   done
@@ -416,14 +357,13 @@ function drop_tables_by_tag {
 
 function clean_tables {
   storcrawl_log $FUNCNAME
-  tag_list=$(psql $db_conn_str -t -c "select table_name from information_schema.tables where table_name like '$file_stat_%' order by table_name desc")
+  tag_list=$(psql $db_conn_str -t -c "select (regexp_matches(table_name, '${file_tbl}([0-9]+$)'))[1] from information_schema.tables where table_name like '${file_tbl}%' order by table_name desc")
 
-  for t in $table_list
+  for t in $tag_list
   do
     if [ "$storcrawl_keep" == 0 ]
     then
-      IFS=_ read f m tag <<<$(echo $t)
-      drop_tables_by_tag "$tag"
+      drop_all_tables_for_tag "$t"
     else
       storcrawl_keep=$((storcrawl_keep - 1))
     fi

@@ -83,14 +83,14 @@ function build_folder_table {
       for usr in $(ypcat -k auto.home | awk '{print $1}')
       do
         add_folder "/home/$usr"
-        echo "added folder /home/${usr}"
+        #echo "added folder /home/${usr}"
       done
     else
       find "$d" -maxdepth 1 -mindepth 1 -name .snapshot -prune -o -type d -print | while read f
       do
         storcrawl_log "${FUNCNAME}: adding folder $f"
         add_folder "$f"
-        echo "added folder ${f}"
+        #echo "added folder ${f}"
       done
     fi
   done
