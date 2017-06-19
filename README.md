@@ -27,3 +27,9 @@ Output is done to a single directory, which must be on shared storage and should
 Custom local scripts are run from several directories, and have access to the current TAG. Examples of things done in these scripts: sync UID/GID names from local system into DB (and remove those tables later), create data and output directory symlinks, etc.
 
 A brief log is kept and a report generated at the end of the scan. These are available through `storcrawldb.sh`.
+
+## Note on our storage_chargeback_ownership setup
+We have a private repo on github that allows collaboration on specifying ownership of folders. The storcrawl system will include some auxiliary scripts to use this repo to supply ownership information during the copy of pwalk output into the database.
+
+To use this, you will need to set up a Deploy Key with github. I found this to be most helpful:
+https://www.justinsilver.com/technology/github-multiple-repository-ssh-deploy-keys/
