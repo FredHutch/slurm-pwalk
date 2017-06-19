@@ -132,6 +132,7 @@ function create_storcrawldb_views {
                         um.name AS name,
                         fm.filename AS foldername,
                         to_timestamp(fm.st_mtime) AS mtime,
+                        to_timestamp(fm.st_atime) AS atime,
                         fm.sum/1073741824 AS gb
                         FROM
                         $STORCRAWLDB_FILE_TABLE fm,
@@ -376,6 +377,7 @@ function owner_report {
 
 function generate_report {
   storcrawl_log $FUNCNAME
+  report_kv "tag" "$STORCRAWLDB_TAG"
   report_kv "total_sources" $(psql $db_conn_str -t -A -c "SELECT count(*) FROM ${STORCRAWLDB_SOURCE_TABLE}")
   report_kv "total_files" $(psql $db_conn_str -t -A -c "SELECT count(*) FROM ${STORCRAWLDB_FILE_TABLE}")
   report_kv "total_folders" $(psql $db_conn_str -t -A -c "SELECT count(*) FROM ${STORCRAWLDB_FOLDER_TABLE}")

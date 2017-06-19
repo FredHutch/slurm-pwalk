@@ -100,7 +100,7 @@ function storcrawl_start {
   # run crawl batch
   sbatch_job_name="${sbatch_job_name_prefix}${STORCRAWLDB_TAG}"
   storcrawl_log "scheduling crawl jobs"
-  echo "sbatch maxarratsize is ${sbatch_maxarraysize}"
+  echo "sbatch maxarraysize is ${sbatch_maxarraysize}"
   num_job_arrays=$((${STORCRAWLDB_JOB_ARRAY_SIZE}/${sbatch_maxarraysize}+1))
   job_array_end_id="${sbatch_maxarraysize}"
   for i in $(seq 1 $num_job_arrays)

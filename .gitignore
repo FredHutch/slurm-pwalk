@@ -7,3 +7,6 @@ after_scripts.d
 remove_scripts.d
 # our owner script
 get_owner.sh
+new_get_owner.sh
+# any stale ownership clones
+storage_chargeback_ownership_*
