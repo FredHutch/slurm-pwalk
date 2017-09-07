@@ -1,13 +1,14 @@
 #! /bin/bash
 
 PROGNAME=$(basename $0)
+DIRNAME=$(dirname $0)
 
 ## source config
-source ./storcrawldb.config
+source $DIRNAME/storcrawldb.config
 
 ## source functions
-source $storcrawldb_db_functions
-source $storcrawldb_functions
+source $DIRNAME/storcrawldb.functions
+source $DIRNAME/storcrawldb.db_functions
 
 # check arguments
 while [[ $# > 1 ]]
@@ -39,10 +40,12 @@ done
 ## generate tag
 if [ -z "$specified_tag" ]
 then
-  specified_tag=$(date +%Y%m%d%H%M)
+  my_tag=$(date +%Y%m%d%H%M)
+else
+  my_tag=$specified_tag
 fi
 
-export STORCRAWLDB_TAG=${STORCRAWLDB_TAG:=$specified_tag}
+export STORCRAWLDB_TAG=${STORCRAWLDB_TAG:=$my_tag}
 export STORCRAWLDB_START_PATH=${STORCRAWLDB_START_PATHS:=$start_paths}
 export STORCRAWLDB_FILE_TABLE=${STORCRAWLDB_FILE_TABLE:="${file_tbl}${STORCRAWLDB_TAG}"}
 export STORCRAWLDB_FOLDER_TABLE=${STORCRAWLDB_FOLDER_TABLE:="${folder_tbl}${STORCRAWLDB_TAG}"}
@@ -255,11 +258,6 @@ function print_report_for_tag {
   exit
 }
 
-function print_owner_report_for_tag {
-  owner_report
-  exit
-}
-
 function print_folders_for_tag {
   print_folders
   exit
@@ -303,9 +301,14 @@ elif [ "$storcrawl_action" = "print-owner-report" ]
 then
   if [ -z "$specified_tag" ]
   then
-    error_exit "Tag not specified."
+    #echo "No tag specified, trying to find most recent tag..."
+    specified_tag=$(get_most_recent_tag)
+    if [ -z "$specified_tag" ]
+    then
+      error_exit "Tag not specified, unable to determine recent tag"
+    fi
   fi
-  print_owner_report_for_tag
+  owner_report $specified_tag
 elif [ "$storcrawl_action" = "print-folders" ]
 then
   if [ -z "$specified_tag" ]

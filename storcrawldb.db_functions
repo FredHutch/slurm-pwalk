@@ -32,7 +32,7 @@ function create_file_table {
                           st_ctime DOUBLE PRECISION NOT NULL,
                           count INT NOT NULL,
                           sum BIGINT NOT NULL)"
-  psql $db_conn_str -c "CREATE INDEX ON ${STORCRAWLDB_FILE_TABLE}(fs_id,st_ino)"
+  #psql $db_conn_str -c "CREATE INDEX ON ${STORCRAWLDB_FILE_TABLE}(fs_id,st_ino)"
   psql $db_conn_str -c "CREATE INDEX ON ${STORCRAWLDB_FILE_TABLE}(owner)"
   #psql $db_conn_str -c "CREATE INDEX ON ${STORCRAWLDB_FILE_TABLE}(filename)"
   #psql $db_conn_str -c "CREATE INDEX ON ${STORCRAWLDB_FILE_TABLE}(fileextension)"
@@ -76,8 +76,10 @@ function create_report_table {
 }
 
 function create_storcrawldb_views {
+  storcrawl_log $FUNCNAME
   # will need update for new tables
   # dynamic view used as pointed to most recent results
+  storcrawl_log "creating $STORCRAWLDB_VIEW"
   psql $db_conn_str -c "CREATE OR REPLACE VIEW $STORCRAWLDB_VIEW AS
                           SELECT
                             st_ino AS inode,
@@ -104,8 +106,10 @@ function create_storcrawldb_views {
                                            WHERE relname = 'usage_by_owner'")
   if [ "${owner_view}" == "m" ]
   then
+    storcrawl_log "dropping usage_by_owner view"
     psql $db_conn_str -c "DROP MATERIALIZED VIEW usage_by_owner"
   fi
+  storcrawl_log "creating usage_by_owner_view"
   psql $db_conn_str -c "CREATE MATERIALIZED VIEW usage_by_owner AS
                         SELECT
                         owner,
@@ -117,16 +121,20 @@ function create_storcrawldb_views {
                         owner != 'UNKNOWN'
                         GROUP BY owner
                         HAVING sum(sum)>1073741824"
+  storcrawl_log "granting select on usage_by_owner to $db_ro_user"
   psql $db_conn_str -c "GRANT SELECT ON usage_by_owner TO $db_ro_user"
 
   # materialized view of large (>1GB) folders
-  folder_view=$(psql $db_conn_str -t -A -c "SELECT relkind from pg_class
-                                            WHERE relname = 'big_folders'")
-  if [ "${folder_view}" == "m" ]
+  # create new with temp name, then rename and grant
+  temp_view=$(psql $db_conn_str -t -A -c "SELECT relkind from pg_class
+                                          WHERE relname = 'tmp_bf'")
+  if [ "${temp_view}" == "m" ]
   then
-    psql $db_conn_str -c "DROP MATERIALIZED VIEW big_folders"
+    storcrawl_log "dropping existing temp big_folders view"
+    psql $db_conn_str -c "DROP MATERIALIZED VIEW tmp_bf"
   fi
-  psql $db_conn_str -c "CREATE MATERIALIZED VIEW big_folders AS
+  storcrawl_log "creating new temp big_folders view"
+  psql $db_conn_str -c "CREATE MATERIALIZED VIEW tmp_bf AS
                         SELECT
                         fm.owner AS owner,
                         um.name AS name,
@@ -144,11 +152,22 @@ function create_storcrawldb_views {
                         fm.count > -1 AND
                         fm.sum > 1073741824 AND
                         fm.filename NOT LIKE '/home/%'"
+  # can't drop materialized views conditionally, so check to avoid error
+  folder_view=$(psql $db_conn_str -t -A -c "SELECT relkind from pg_class
+                                            WHERE relname = 'big_folders'")
+  if [ "${folder_view}" == "m" ]
+  then
+    storcrawl_log "dropping old big_folders view and renaming temp"
+    psql $db_conn_str -c "DROP MATERIALIZED VIEW big_folders"
+    psql $db_conn_str -c "ALTER MATERIALIZED VIEW tmp_bf RENAME TO big_folders"
+  fi
+  storcrawl_log "granting selecton big_folders view to $db_ro_user"
   psql $db_conn_str -c "GRANT SELECT ON big_folders TO $db_ro_user"
 }
 
 ## roles
 function check_ro_user {
+  storcrawl_log $FUNCNAME
   my_role=$(psql $db_conn_str -t -A -F, -c "SELECT usename from pg_user where usename = '${db_ro_user}'")
   if [ -z "${my_role}" ]
   then
@@ -197,6 +216,15 @@ function check_tag {
   then
     error_exit "A table with tag $STORCRAWLDB_STAT_TABLE exists, aborting!"
   fi
+}
+
+function get_most_recent_tag {
+  # get the most recent tag
+  last_tag=$(psql $db_conn_str -t -A -c "SELECT SUBSTRING(table_name, '([0-9]+)$') FROM information_schema.tables
+                                           WHERE table_name LIKE '${file_tbl}%'
+                                           ORDER BY table_name desc
+                                           LIMIT 1")
+  echo $last_tag
 }
 
 function check_last_crawl {
@@ -311,20 +339,24 @@ function remove_view {
 }
 
 function print_log {
-  psql $db_conn_str -t -A -F, -c "SELECT * FROM ${STORCRAWLDB_LOG_TABLE}"
+  psql $db_conn_str -t -A -F, -c "SELECT * FROM ${STORCRAWLDB_LOG_TABLE}
+                                    ORDER BY timestamp DESC"
 }
 
 function print_report {
-  psql $db_conn_str -t -A -F, -c "SELECT timestamp,key,value FROM ${STORCRAWLDB_REPORT_TABLE}"
+  psql $db_conn_str -t -A -F, -c "SELECT timestamp,key,value
+                                    FROM ${STORCRAWLDB_REPORT_TABLE}"
 }
 
 function print_folders {
-  psql $db_conn_str -t -A -F, -c "SELECT folder FROM ${STORCRAWLDB_FOLDER_TABLE}"
+  psql $db_conn_str -t -A -F, -c "SELECT folder
+                                    FROM ${STORCRAWLDB_FOLDER_TABLE}"
 }
 
 function report_kv {
-  psql $db_conn_str -t -A -c "INSERT INTO ${STORCRAWLDB_REPORT_TABLE}(key,value)
-                              VALUES('${1}','${2}')"
+  psql $db_conn_str -t -A -c "INSERT
+                                INTO ${STORCRAWLDB_REPORT_TABLE}(key,value)
+                                VALUES('${1}','${2}')"
 }
 
 ## meta
@@ -350,29 +382,37 @@ function init_crawl {
 }
 
 function drop_all_tables_for_tag {
+  storcrawl_log $FUNCNAME
   for i in $source_tbl $file_tbl $folder_tbl $log_tbl $report_tbl
   do
     drop_table "$i$1"
   done
+  run_scripts "remove_scripts.d"
 }
 
 function clean_tables {
   storcrawl_log $FUNCNAME
   tag_list=$(psql $db_conn_str -t -c "select (regexp_matches(table_name, '${file_tbl}([0-9]+$)'))[1] from information_schema.tables where table_name like '${file_tbl}%' order by table_name desc")
+  storcrawl_log "tag list is $tag_list"
 
   for t in $tag_list
   do
     if [ "$storcrawl_keep" == 0 ]
     then
+      storcrawl_log "DEBUG: dropping tag $t keep in $storcrawl_keep"
       drop_all_tables_for_tag "$t"
     else
+      storcrawl_log "DEBUG: keeping tab $t keep is $storcrawl_keep"
       storcrawl_keep=$((storcrawl_keep - 1))
     fi
   done
 }
 
 function owner_report {
-  psql $db_conn_str -t -A -F, -c "select din.owner, round(sum(fs.st_size)/1024.0/1024.0/1024.0/1024.0,2) from ${STORCRAWLDB_STAT_TABLE} fs, (select distinct(inode),owner from ${STORCRAWLDB_META_TABLE}) as din where fs.inode = din.inode group by din.owner"
+  psql $db_conn_str -t -A -F, -c "SELECT
+                                    owner, sum(sum) AS tb
+                                  FROM ${file_tbl}$1
+                                    GROUP BY owner"
 }
 
 function generate_report {
