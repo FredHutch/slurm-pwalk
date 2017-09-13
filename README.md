@@ -1,20 +1,25 @@
 # slurm-pwalk
-Use [pwalk](https://github.com/fizwit/filesystem-reporting-tools) running on your slurm cluster to walk big file systems and store metadata in a PostgreSQL database.
+Use [pwalk](https://github.com/fizwit/filesystem-reporting-tools) to walk big file systems and store metadata in a database.
+
+Currently [slurm](https://slurm.schedmd.com/) is supported for job scheduling and [PostgreSQL](https://www.postgresql.org/) for storage.
 
 ## Requirements
-* slurm
 * pwalk
+* slurm
 * PostgreSQL
 * [csvquote](https://github.com/dbro/csvquote)
-* [Lmod](https://github.com/TACC/Lmod)
+* optional - [Lmod](https://github.com/TACC/Lmod)
 
 ## How to use
 1. Clone repo
 2. Install requirements (and ensure paths in storcrawldb.config are accurate)
-3. create dirs: before_scripts.d after_scripts.d remove_scripts.d
+3. create dirs: before_scripts.d after_scripts.d
 4. Create a PostgreSQL database
 5. Edit storcrawldb.config to suit your environment
-6. run `stocrawldb.sh`
+6. Ensure your account can run pwalk, sbatch, psql, csvquote, and awk
+7. run `storcrawldb.sh --action start < folderlist`
+
+Note: the format for folderlist is: owner,path [however, owner can be blank or omitted] - all folders in the list will be crawled with subfolders excluded from parent folder crawls (allowing different ownership)
 
 ## Recommendations
 * run system as a normal user, make the pwalk binary setuid 0 to scan as root as needed
