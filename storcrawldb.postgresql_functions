@@ -200,6 +200,21 @@ function create_storcrawldb_views {
   storcrawl_log "alter tmp_bf view rename to big_folders exit" "${?}"
   psql $conn -c "GRANT SELECT ON big_folders TO $db_ro_user"
   storcrawl_log "grant on big_folders view to $db_ro_user exit" "${?}"
+
+  # create 'folders' view for dudb tool
+  psql $conn -t -A -c "DROP MATERIALIZED VIEW folders"
+  psql $conn -t -A -c "CREATE MATERIALIZED VIEW folders AS
+                       SELECT
+                       ROUND(
+                         ${STORCRAWLDB_FILE_TABLE}.sum/1024.0)
+                       AS kb,
+                       ${STORCRAWLDB_FILE_TABLE}.filename
+                       AS foldername
+                       FROM ${STORCRAWLDB_FILE_TABLE}
+                       WHERE
+                       ${STORCRAWLDB_FILE_TABLE}.count > '-1'::integer
+                       AND ${STORCRAWLDB_FILE_TABLE}.sum > 0"
+  psql $conn -t -A -c "GRANT SELECT ON folders TO $db_ro_user"
 }
 
 ## roles
