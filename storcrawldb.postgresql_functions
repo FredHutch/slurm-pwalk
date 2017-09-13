@@ -7,10 +7,10 @@ psql_module="PostgreSQL/9.6.1-foss-2016b"
 
 # you will need to create ~/.pgpass with the appropriate credentials in it
 db_host="mydb"
-#db_port=32086
-db_port=32092
-#database="storcrawldb"
-database="storcrawl-dev"
+db_port=32086
+#db_port=32092
+database="storcrawldb"
+#database="storcrawl-dev"
 db_user="storcrawl_user"
 
 # ro user will be created and granted ro perms on DB

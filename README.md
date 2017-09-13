@@ -15,7 +15,7 @@ Currently [slurm](https://slurm.schedmd.com/) is supported for job scheduling an
 2. Install requirements (and ensure paths in storcrawldb.config are accurate)
 3. create dirs: before_scripts.d after_scripts.d
 4. Create a PostgreSQL database
-5. Edit storcrawldb.config to suit your environment
+5. Edit storcrawldb.config and storcrawldb.postgresql_functions to suit your environment
 6. Ensure your account can run pwalk, sbatch, psql, csvquote, and awk
 7. run `storcrawldb.sh --action start < folderlist`
 
