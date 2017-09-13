@@ -1,0 +1,561 @@
+### postgresql db functions
+
+# we keep PostgreSQL in an environment module
+lmod_init="/app/Lmod/lmod/lmod/init/bash"
+modulefile_dir="/app/easybuild/modules/all"
+psql_module="PostgreSQL/9.6.1-foss-2016b"
+
+# you will need to create ~/.pgpass with the appropriate credentials in it
+db_host="mydb"
+#db_port=32086
+db_port=32092
+#database="storcrawldb"
+database="storcrawl-dev"
+db_user="storcrawl_user"
+
+# ro user will be created and granted ro perms on DB
+db_ro_user="storcrawl_ro"
+db_ro_password="scicomp_rulz"
+
+# psql standard command line flags
+db_flags="-q "
+
+# construct the connection string used for all psql commands
+conn="-h $db_host -p $db_port -d $database -U $db_user $db_flags"
+
+## creates
+# note that foreign keys are avoided for performance reasons
+function create_source_table {
+  # storcrawl table of fs sources (key: server+export/share)
+  psql $conn -c "CREATE TABLE IF NOT EXISTS ${CRAWL_SOURCE_TABLE}(
+                          id SERIAL,
+                          server TEXT,
+                          export TEXT,
+                          PRIMARY KEY(id),
+                          unique (server, export))"
+  storcrawl_log "create source table exit" "${?}"
+}
+
+function create_file_table {
+  # trying single table again
+  psql $conn -c "CREATE TABLE IF NOT EXISTS ${CRAWL_FILE_TABLE}(
+                          fs_id INT NOT NULL,
+                          owner TEXT,
+                          st_ino BIGINT NOT NULL,
+                          parent_inode BIGINT NOT NULL,
+                          directory_depth INT NOT NULL,
+                          filename text,
+                          fileextension TEXT,
+                          st_uid BIGINT NOT NULL,
+                          st_gid BIGINT NOT NULL,
+                          st_size BIGINT NOT NULL,
+                          st_dev INT NOT NULL,
+                          st_blocks BIGINT NOT NULL,
+                          st_nlink INT NOT NULL,
+                          st_mode TEXT NOT NULL,
+                          st_atime DOUBLE PRECISION NOT NULL,
+                          st_mtime DOUBLE PRECISION NOT NULL,
+                          st_ctime DOUBLE PRECISION NOT NULL,
+                          count INT NOT NULL,
+                          sum BIGINT NOT NULL)"
+  storcrawl_log "create source table exit" "${?}"
+  #psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(fs_id,st_ino)"
+  psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(owner)"
+  #psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(filename)"
+  #psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(fileextension)"
+  psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(st_uid,st_gid)"
+  psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(st_atime,st_mtime)"
+  psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(count)"
+  psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(sum)"
+}
+
+function create_log_table {
+  # per crawl log table
+  psql $conn -c "CREATE TABLE IF NOT EXISTS ${CRAWL_DB_LOG_TABLE}(
+                          id SERIAL,
+                          log_msg json NOT NULL,
+                          PRIMARY KEY(id))"
+  if [ "$?" -eq "0" ]
+  then
+    echo "created log table for tag ${CRAWL_TAG}"
+  else
+    error_exit "log table creation failed"
+  fi
+}
+
+function create_folder_table {
+  # per crawl table of crawl folers/paths
+  psql $conn -c "CREATE TABLE IF NOT EXISTS ${CRAWL_FOLDER_TABLE}(
+                          id SERIAL,
+                          fs_id INT NOT NULL
+                            REFERENCES ${CRAWL_SOURCE_TABLE} (id),
+                          added TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                          started TIMESTAMP WITH TIME ZONE,
+                          finished TIMESTAMP WITH TIME ZONE,
+                          folder TEXT NOT NULL,
+                          owner TEXT,
+                          PRIMARY KEY(id))"
+  storcrawl_log "create folder table exit" "${?}"
+}
+
+function create_report_table {
+  # per crawl report of crawl statistics
+  psql $conn -c "CREATE TABLE IF NOT EXISTS ${CRAWL_REPORT_TABLE}(
+                          id SERIAL,
+                          timestamp TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                          key TEXT NOT NULL,
+                          value TEXT NOT NULL,
+                          PRIMARY KEY(id))"
+  storcrawl_log "create report table exit" "${?}"
+}
+
+function create_storcrawldb_views {
+  # will need update for new tables
+  # dynamic view used as pointed to most recent results
+  psql $conn -c "CREATE OR REPLACE VIEW $CRAWL_VIEW AS
+                          SELECT
+                            st_ino AS inode,
+                            parent_inode,
+                            owner,
+                            directory_depth,
+                            filename,
+                            fileextension,
+                            st_uid AS UID,
+                            st_gid AS GID,
+                            st_size,
+                            st_dev,
+                            st_blocks,
+                            st_nlink,
+                            st_mode,
+                            st_atime AS atime,
+                            st_mtime AS mtime,
+                            st_ctime AS ctime,
+                            count,
+                            sum
+                          FROM
+                            $CRAWL_FILE_TABLE"
+  storcrawl_log "create ${CRAWL_VIEW} exit" "${?}"
+
+  # materialized view of owner report
+  owner_view=$(psql $conn -t -A -c "SELECT relkind from pg_class
+                                    WHERE relname = 'usage_by_owner'")
+  if [ "${owner_view}" == "m" ]
+  then
+    psql $conn -c "DROP MATERIALIZED VIEW usage_by_owner"
+    storcrawl_log "drop usage_by_owner view exit" "${?}"
+  fi
+  psql $conn -c "CREATE MATERIALIZED VIEW usage_by_owner AS
+                   SELECT
+                   owner,
+                   round(sum(sum/1024.0/1024.0/1024.0/1024.0),2) AS tb,
+                   sum(count) as files
+                   FROM $CRAWL_FILE_TABLE
+                   WHERE count > -1 AND
+                   owner != 'REDUNDANT' AND
+                   owner != 'UNKNOWN'
+                   GROUP BY owner
+                   HAVING sum(sum)>1073741824"
+  storcrawl_log "create usage_by_owner view exit" "${?}"
+  psql $conn -c "GRANT SELECT ON usage_by_owner TO $db_ro_user"
+  storcrawl_log "grant on usage_by_owner view to ${db_ro_user} exit" "${?}"
+
+  # materialized view of large (>1GB) folders
+  # create new with temp name, then rename and grant
+  temp_view=$(psql $conn -t -A -c "SELECT relkind from pg_class
+                                          WHERE relname = 'tmp_bf'")
+  if [ "${temp_view}" == "m" ]
+  then
+    psql $conn -c "DROP MATERIALIZED VIEW tmp_bf"
+    storcrawl_log "drop tmp_bf view exit" "${?}"
+  fi
+  psql $conn -c "CREATE MATERIALIZED VIEW tmp_bf AS
+                   SELECT
+                   fm.owner AS owner,
+                   um.name AS name,
+                   fm.filename AS foldername,
+                   to_timestamp(fm.st_mtime) AS mtime,
+                   to_timestamp(fm.st_atime) AS atime,
+                   fm.sum/1073741824 AS gb
+                   FROM
+                   $CRAWL_FILE_TABLE fm,
+                   uid_mapping_$CRAWL_TAG um
+                   WHERE
+                   fm.owner != 'REDUNDANT' AND
+                   fm.owner != 'UNKNOWN' AND
+                   fm.st_uid = um.uid AND
+                   fm.count > -1 AND
+                   fm.sum > 1073741824 AND
+                   fm.filename NOT LIKE '/home/%'"
+  storcrawl_log "create tmp_bf view exit" "${?}"
+
+  # can't drop materialized views conditionally, so check to avoid error
+  folder_view=$(psql $conn -t -A -c "SELECT relkind from pg_class
+                                     WHERE relname = 'big_folders'")
+  if [ "${folder_view}" == "m" ]
+  then
+    psql $conn -c "DROP MATERIALIZED VIEW big_folders"
+    storcrawl_log "drop big_folders view exit" "${?}"
+  fi
+  psql $conn -c "ALTER MATERIALIZED VIEW tmp_bf RENAME TO big_folders"
+  storcrawl_log "alter tmp_bf view rename to big_folders exit" "${?}"
+  psql $conn -c "GRANT SELECT ON big_folders TO $db_ro_user"
+  storcrawl_log "grant on big_folders view to $db_ro_user exit" "${?}"
+}
+
+## roles
+function check_ro_user {
+  my_role=$(psql $conn -t -A -F, -c "SELECT usename
+                                     FROM pg_user
+                                     WHERE usename = '${db_ro_user}'")
+  if [ -z "${my_role}" ]
+  then
+    psql $conn -c "CREATE ROLE ${db_ro_user}
+                   LOGIN PASSWORD '${db_ro_password}'"
+  fi
+}
+
+function update_ro_grants {
+  my_role=$(psql $conn -t -A -F, -c "SELECT usename
+                                     FROM pg_user
+                                     WHERE usename = '${db_ro_user}'")
+  if [ -z "${my_role}" ]
+  then
+    psql $conn -c "CREATE ROLE ${db_ro_user}
+                   LOGIN PASSWORD '${db_ro_password}'"
+    storcrawl_log "second create role ${db_ro_user} exit" "${?}"
+  fi
+  psql $conn -c "GRANT SELECT ON $CRAWL_FILE_TABLE TO $db_ro_user"
+  storcrawl_log "grant on ${CRAWL_FILE_TABLE} to ${db_ro_user} exit" "${?}"
+  psql $conn -c "GRANT SELECT ON $CRAWL_SOURCE_TABLE TO $db_ro_user"
+  storcrawl_log "grant on ${CRAWL_SOURCE_TABLE} to ${db_ro_user} exit" "${?}"
+  psql $conn -c "GRANT SELECT ON $CRAWL_FOLDER_TABLE TO $db_ro_user"
+  storcrawl_log "grant on ${CRAWL_FOLDER_TABLE} to ${db_ro_user} exit" "${?}"
+  psql $conn -c "GRANT SELECT ON $CRAWL_DB_LOG_TABLE TO $db_ro_user"
+  storcrawl_log "grant on ${CRAWL_DB_LOG_TABLE} to ${db_ro_user} exit" "${?}"
+  psql $conn -c "GRANT SELECT ON $CRAWL_REPORT_TABLE TO $db_ro_user"
+  storcrawl_log "grant on ${CRAWL_REPORT_TABLE} to ${db_ro_user} exit" "${?}"
+  psql $conn -c "GRANT SELECT ON $CRAWL_VIEW TO $db_ro_user"
+  storcrawl_log "grant on ${CRAWL_VIEW} to ${db_ro_user} exit" "${?}"
+}
+
+## drops
+
+function drop_table {
+  psql $conn -c "DROP TABLE IF EXISTS $1"
+  storcrawl_log "Drop table $1 exit" "${?}"
+}
+
+function drop_view {
+  psql $conn -c "DROP VIEW $1"
+  storcrawl_log "Drop view $1 exit" "${?}"
+}
+
+## queries
+
+function db_storcrawl_log {
+  psql $conn -c "INSERT INTO ${CRAWL_DB_LOG_TABLE}(log_msg)
+                          VALUES('${1}')"
+}
+
+function check_tag {
+  # check the given tag to see if it exists
+  IFS=, read exists <<<$(psql $conn -t -A -c "SELECT EXISTS
+                                               (SELECT 1 FROM
+                                                information_schema.tables
+                                                WHERE
+                                                table_schema = 'public'
+                                                AND
+                                          table_name = '${CRAWL_STAT_TABLE}')")
+  if [ "$exists" == "t" ]
+  then
+    error_exit "A table with tag $CRAWL_STAT_TABLE exists, aborting!"
+  fi
+}
+
+function get_most_recent_tag {
+  # get the most recent tag
+  last_tag=$(psql $conn -t -A -c "SELECT
+                                         SUBSTRING(table_name, '([0-9]+)$')
+                                         FROM information_schema.tables
+                                         WHERE table_name LIKE '${file_tbl}%'
+                                         ORDER BY table_name desc
+                                         LIMIT 1")
+  echo $last_tag
+}
+
+function check_last_crawl {
+  # read the report from the last crawl to ensure it completed
+  last_tag=$(psql $conn -t -A -c "SELECT
+                                         SUBSTRING(table_name, '([0-9]+)$')
+                                         FROM information_schema.tables
+                                         WHERE table_name LIKE '${file_tbl}%'
+                                         ORDER BY table_name desc
+                                         LIMIT 1")
+  if [[ "$last_tag" =~ "^[0-9]+$" ]]
+  then
+    status=$(psql $conn -t -A -c "SELECT
+                                         EXISTS
+                                         (SELECT 1
+                                          FROM information_schema.tables
+                                          WHERE
+                                          table_name
+                                          LIKE '${report_tbl}_${last_tag}')")
+    if [ "$status" == "f" ]
+    then
+      error_exit "Crawl $last_tag did not finish"
+    fi
+  fi
+}
+
+# my_id=$(db_get_fs_id ${server} ${export})
+function db_get_fs_id {
+  psql $conn -1 -t -A -c "LOCK TABLE ${CRAWL_SOURCE_TABLE}
+                                   IN ACCESS EXCLUSIVE MODE;
+                                 INSERT INTO ${CRAWL_SOURCE_TABLE}
+                                   (server,export)
+                                 VALUES('${1}','${2}')
+                                 ON CONFLICT (server,export) DO UPDATE
+                                   SET server='${1}', export='${2}'
+                                   RETURNING id"
+  storcrawl_log "server ${1} export ${2} id ${id} exit" "${?}"
+}
+
+# my_id=$(db_add_folder ${folder} ${fs_id} [${owner}])
+function db_add_folder {
+  local folder="${1}"
+  local fs_id="${2}"
+  local own=""
+  if ! [ -z "${3}" ]
+  then
+    own="${3}"
+  fi
+  psql $conn -1 -t -A -c "INSERT INTO
+                          ${CRAWL_FOLDER_TABLE}
+                           (folder,fs_id,owner)
+                          VALUES ('${folder}','${fs_id}', '${own}')"
+  storcrawl_log "add ${folder}, ${fs_id}, ${own} exit" "${?}"
+}
+
+# folder_crawl_finish ${folder_id}
+function folder_crawl_finish {
+  # update timestamp for finished crawl by folder name
+  psql $conn -1 -t -A -c "UPDATE ${CRAWL_FOLDER_TABLE}
+                          SET finished = current_timestamp
+                          WHERE id = ${1}"
+  storcrawl_log "finish folder ${1} exit" "${?}"
+}
+
+# folder_id=$(db_get_folder_id)
+function db_get_folder_id {
+  # atomically get folder id
+  # implies folder_crawl_start
+  psql $conn -1 -t -A -c "
+    LOCK TABLE $CRAWL_FOLDER_TABLE
+      IN ACCESS EXCLUSIVE MODE;
+    UPDATE $CRAWL_FOLDER_TABLE
+      SET started=current_timestamp
+      WHERE id = (SELECT id FROM $CRAWL_FOLDER_TABLE
+        WHERE started IS NULL LIMIT 1)
+      RETURNING id"
+}
+
+# owner=$(get_folder_detail $folder_id "owner")
+function db_get_folder_detail {
+  psql $conn -1 -t -A -c "
+    SELECT $2 from $CRAWL_FOLDER_TABLE
+      WHERE id = $1"
+}
+
+# exports total job count
+function set_job_array_size {
+  local my_tot_jobs=$(psql $conn -t -A -c "SELECT
+                                           COUNT(*)
+                                           FROM
+                                           ${CRAWL_FOLDER_TABLE}")
+  export CRAWL_JOB_ARRAY_SIZE="${my_tot_jobs}"
+}
+
+# build_exclusion_list_file ${folder_name} ${excl_file_name}
+function build_exclusion_list_file {
+  psql $conn -t -A -c "SELECT folder from ${CRAWL_FOLDER_TABLE}
+                       WHERE folder like '${1}/_%'" > ${2}
+}
+
+function list_tags {
+  # display all tags with tables in the DB
+  search_str=$(echo "${file_tbl}" | tr '_' '\_')
+  psql $conn -t -A -c "SELECT
+                              SUBSTRING(table_name, '([0-9]+)$')
+                              FROM information_schema.tables
+                              WHERE table_name LIKE '${search_str}%'
+                              ORDER BY table_name"
+}
+
+# remove_tag ${CRAWL_TAG}
+function remove_tag {
+  remove_views
+  problem=$(psql $conn -t -A -c "SELECT
+                                 EXISTS
+                                 (SELECT 1
+                                  FROM INFORMATION_SCHEMA.VIEWS
+                                  WHERE view_definition like '%${1}%')")
+  if [ "$problem" == "f" ]
+  then
+    tbl_list=$(psql $conn -t -A -c "SELECT table_name
+                                    FROM INFORMATION_SCHEMA.TABLES
+                                    WHERE table_name LIKE '%${1}%'")
+    for tbl in ${tbl_list}
+    do
+      psql $conn -t -A -c "DROP TABLE $tbl CASCADE"
+      echo "removed table ${tbl} for TAG ${1}"
+    done
+  else
+    echo "${1} is the 'live' tag - try again with --force yes"
+    exit 1
+  fi
+}
+
+function remove_views {
+  if [ "$forced" == "yes" ]
+  then
+    echo "dropping views...(does not exist errors are OK)"
+    psql $conn -t -A -c "DROP VIEW file_metadata"
+    psql $conn -t -A -c "DROP MATERIALIZED VIEW tmp_bf"
+    psql $conn -t -A -c "DROP MATERIALIZED VIEW big_folders"
+    psql $conn -t -A -c "DROP MATERIALIZED VIEW usage_by_owner"
+    psql $conn -t -A -c "DROP MATERIALIZED VIEW folders"
+  fi
+}
+
+function print_log {
+  psql $conn -t -A -F, -c "SELECT * FROM ${CRAWL_DB_LOG_TABLE}
+                                    ORDER BY timestamp DESC"
+}
+
+function print_report {
+  psql $conn -t -A -F, -c "SELECT timestamp,key,value
+                                    FROM ${CRAWL_REPORT_TABLE}"
+}
+
+function print_folders {
+  psql $conn -t -A -F, -c "SELECT folder
+                                    FROM ${CRAWL_FOLDER_TABLE}"
+}
+
+function report_kv {
+  psql $conn -t -A -c "INSERT
+                                INTO ${CRAWL_REPORT_TABLE}(key,value)
+                                VALUES('${1}','${2}')"
+}
+
+## meta
+
+function init_db {
+  check_ro_user || error_exit "Unable to create read-only db user!"
+}
+
+function init_crawl {
+  create_log_table || error_exit "Unable to create log table!"
+  create_source_table || error_exit "Unable to create file export table!"
+  create_folder_table || error_exit "Unable to create folder table!"
+  create_file_table || error_exit "Unable to create file table!"
+  create_report_table || error_exit "Unable to create report table!"
+  for v in $(compgen -A variable | grep CRAWL)
+  do
+    eval v_val=\$$v
+    storcrawl_log "init ENV VAR ${v}" "${v_val}"
+  done
+}
+
+function drop_all_tables_for_tag {
+  for i in $source_tbl $file_tbl $folder_tbl $log_tbl $report_tbl
+  do
+    drop_table "$i$1"
+  done
+}
+
+# import_crawl_csv ${output_file} ${fs_id} ${owner}
+#
+# pwalk fields: inode,parent-inode,directory-depth,"filename","fileExtension",
+#   UID,GID,st_size,st_dev,st_blocks",st_nlink,"st_mode",atime,mtime,ctime,
+#   count(files),sum(size)
+function import_crawl_csv {
+  local csv_file="${1}.csv"
+  local fs_id="${2}"
+  local owner="${3}"
+
+  ${csvquote_cmd} "${CRAWL_CSV_DIR}/${csv_file}" |\
+  uconv -s -i |\
+  sort -t, -k 4,4 -u |\
+  awk -F, -v fsid="${fs_id}" -v own="${owner}" '{print fsid","own","$0}' |\
+  ${csvquote_cmd} -u |\
+  psql $conn -c "COPY ${CRAWL_FILE_TABLE}
+                          (fs_id,owner,st_ino,parent_inode,directory_depth,
+                           filename,fileextension,st_uid,st_gid,st_size,
+                           st_dev,st_blocks,st_nlink,st_mode,st_atime,
+                           st_mtime,st_ctime,count,sum)
+                        FROM STDIN WITH csv ESCAPE '\'"
+  storcrawl_log "Copy exit" "${?}"
+}
+
+function clean_tables {
+  tag_list=$(psql $conn -t -c "SELECT
+                                      (regexp_matches(
+                                        table_name, '${file_tbl}([0-9]+$)'))[1]
+                                      FROM information_schema.tables
+                                      WHERE table_name
+                                      LIKE '${file_tbl}%'
+                                      ORDER BY table_name DESC")
+
+  for t in $tag_list
+  do
+    if [ "$storcrawl_keep" == 0 ]
+    then
+      drop_all_tables_for_tag "$t"
+    else
+      storcrawl_keep=$((storcrawl_keep - 1))
+    fi
+  done
+}
+
+function owner_report {
+  psql $conn -t -A -F, -c "SELECT
+                                    owner, sum(sum) AS tb
+                                  FROM ${file_tbl}$1
+                                    GROUP BY owner"
+}
+
+function generate_report {
+  report_kv "tag" "$CRAWL_TAG"
+  report_kv "total_sources" $(psql $conn -t -A -c "SELECT
+                                                   count(*)
+                                                   FROM
+                                                   ${CRAWL_SOURCE_TABLE}")
+  report_kv "total_files" $(psql $conn -t -A -c "SELECT
+count(*) FROM ${CRAWL_FILE_TABLE}")
+  report_kv "total_folders" $(psql $conn -t -A -c "SELECT
+count(*) FROM ${CRAWL_FOLDER_TABLE}")
+  report_kv "total_bytes" $(psql $conn -t -A -c "SELECT
+sum(sum) FROM ${CRAWL_FILE_TABLE}")
+  report_kv "total_TB" $(psql $conn -t -A -c "SELECT
+round(sum(sum)/1024.0/1024.0/1024.0/1024.0,2) FROM ${CRAWL_FILE_TABLE}")
+  report_kv "total_owners" $(psql $conn -t -A -c "SELECT
+count(DISTINCT owner) FROM ${CRAWL_FILE_TABLE}")
+  report_kv "crawl_time" $(psql $conn -t -A -c "SELECT
+                                                MAX(finished)-MIN(started)
+                                                FROM ${CRAWL_FOLDER_TABLE}")
+  report_kv "avg_fldr_time" $(psql $conn -t -A -c "SELECT
+                                                   AVG(finished-started)
+                                                   FROM ${CRAWL_FOLDER_TABLE}")
+  report_kv "fastest" $(psql $conn -t -A -c "SELECT folder
+                                             FROM ${CRAWL_FOLDER_TABLE}
+                                             WHERE finished-started = 
+                                             (SELECT MIN(finished-started)
+                                              FROM ${CRAWL_FOLDER_TABLE})")
+  report_kv "slowest" $(psql $conn -t -A -c "SELECT folder
+                                             FROM ${CRAWL_FOLDER_TABLE}
+                                             WHERE finished-started = 
+                                             (SELECT MAX(finished-started)
+                                              FROM ${CRAWL_FOLDER_TABLE})")
+  report_kv "done" "done"
+}

@@ -1,0 +1,92 @@
+# slurm functions and commands
+
+# commands
+sbatch_cmd="sbatch"
+
+# sbatch job count limit
+#sbatch_simultaneous_tasks=15
+sbatch_simultaneous_tasks=3
+
+# sbatch job array size limit - run multiple arrays if folder over this limit
+#slurm_maxarraysize=$(scontrol show config | awk '/^MaxArraySize/ {print $3}')
+export CRAWL_JOB_ARRAY_MAX_SIZE=1000
+
+# sbatch command line arguments
+sbatch_partition="boneyard"
+sbatch_mail_type="BEGIN,END,FAIL"
+sbatch_mail_user="bmcgough"
+sbatch_time="1-0"   # days-hours
+# pwalk parallelizes, so we run one job per folder
+sbatch_cpus_per_task="12"
+# the crawl tag will be appended to this to become job-name
+sbatch_job_name_prefix="storcrawl_"
+
+# schedule the crawl jobs
+function slurm_run_crawl_jobs {
+  sbatch_job_name="${sbatch_job_name_prefix}${CRAWL_TAG}"
+  # chunk into array sets at array size limit
+  num_job_arrays=$((${CRAWL_JOB_ARRAY_SIZE}/${CRAWL_JOB_ARRAY_MAX_SIZE}+1))
+  # loop through job arrays
+  for i in $(seq 1 $num_job_arrays)
+  do
+    # set our end numbers for the array
+    if [ "$i" -eq "$num_job_arrays" ]
+    then
+      end_id=$((${CRAWL_JOB_ARRAY_SIZE}%${sbatch_maxarraysize}))
+    else
+      end_id="${sbatch_maxarraysize}"
+    fi
+
+    # build the command line
+    cmd="--array=1-${end_id}%${sbatch_simultaneous_tasks}"
+    cmd="$cmd --partition=$sbatch_partition"
+    cmd="$cmd --mail-type=$sbatch_mail_type"
+    cmd="$cmd --mail-user=$sbatch_mail_user"
+    cmd="$cmd --time=$sbatch_time"
+    cmd="$cmd --cpus-per-task=$sbatch_cpus_per_task"
+    cmd="$cmd --job-name=$sbatch_job_name"
+    cmd="$cmd --output=${CRAWL_OUTPUT_DIR}/output_%a_%A.%J.stdout"
+    cmd="$cmd --error=${CRAWL_OUTPUT_DIR}/output_%a_%A.%J.stderr"
+    cmd="$cmd --wrap=\"$0 --action crawl\""
+
+    # run it
+    sbatch_output=$(eval $sbatch_cmd $cmd)
+
+    # check it
+    if [ $? -eq 0 ]
+    then
+      echo "crawl array job launched: $sbatch_output"
+      storcrawl_log "crawl array job launched: $sbatch_output"
+    else
+      error_exit "Ooops, unable to launch crawl jobs, exiting..."
+    fi
+  done
+}
+
+# schedule the cleanup job
+function slurm_run_cleanup_job {
+  sbatch_job_name="${sbatch_job_name_prefix}${CRAWL_TAG}"
+  # build the command line
+  cmd="--partition=$sbatch_partition" 
+  cmd="$cmd --mail-type=$sbatch_mail_type"
+  cmd="$cmd --mail-user=$sbatch_mail_user"
+  cmd="$cmd --time=$sbatch_time"
+  cmd="$cmd --output=${CRAWL_OUTPUT_DIR}/output_housekeeper_%a.%J.stdout"
+  cmd="$cmd --error=${CRAWL_OUTPUT_DIR}/output_housekeeper_%a.%J.stderr"
+  cmd="$cmd --cpus-per-task=$sbatch_cpus_per_task"
+  cmd="$cmd --job-name=$sbatch_job_name"
+  cmd="$cmd --dependency=singleton"
+  cmd="$cmd --wrap=\"$0 --action cleanup\""
+
+  # run it
+  sbatch_output=$(eval $sbatch_cmd $cmd)
+
+  # check it
+  if [ $? -eq 0 ]
+  then
+    echo "crawl cleanup job launched: $sbatch_output"
+    storcrawl_log "crawl cleanup job launched: $sbatch_output"
+  else
+    error_exit "Ooops, unable to launch cleanup job, exiting..."
+  fi
+}
