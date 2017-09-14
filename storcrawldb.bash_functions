@@ -118,14 +118,27 @@ function build_folder_table {
   done
 }
 
+# find_mount ${path}
+# uses findmnt to find source of path, recurses up tree until mount is found
+# as folders below the mount point may not allow non-root to see mount info
+function find_mount {
+  s=$(findmnt -n -o source --target "${1}")
+  if [ $? -eq 0 ]
+  then
+    echo "${s}"
+  else
+    find_mount $(dirname "${1}")
+  fi
+}
+
 # export=$(get_export ${folder_name})
 function get_export {
   # returns device name for direct-attach storage
-  mySource=$(df --output=source "$1" | awk '! /Filesystem/ {print $1}')
+  mySource=find_mount "${1}"
   echo $mySource | grep -q ':'
   if [ $? -eq 0 ]
   then
-    echo $mySource | awk -F: '{print $2}'
+    echo $mySource | cut -f2 -d:
   else
     echo $mySource
   fi
@@ -133,11 +146,11 @@ function get_export {
 
 # server=$(get_server ${folder_name})
 function get_server {
-  myServer=$(df --output=source "$1" | awk '! /Filesystem/ {print $1}')
+  myServer=find_mount "${1}"
   echo $myServer | grep -q ':'
   if [ $? -eq 0 ]
   then
-    echo $myServer | awk -F: '{print $1}'
+    echo $myServer | cut -f1 -d:
   else
     hostname
   fi

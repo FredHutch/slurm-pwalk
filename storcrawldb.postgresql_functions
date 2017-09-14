@@ -1,9 +1,9 @@
 ### postgresql db functions
 
 # we keep PostgreSQL in an environment module
-lmod_init="/app/Lmod/lmod/lmod/init/bash"
-modulefile_dir="/app/easybuild/modules/all"
-psql_module="PostgreSQL/9.6.1-foss-2016b"
+source /app/Lmod/lmod/lmod/init/bash
+module use /app/easybuild/modules/all
+module load PostgreSQL/9.6.1-foss-2016b
 
 # you will need to create ~/.pgpass with the appropriate credentials in it
 db_host="mydb"

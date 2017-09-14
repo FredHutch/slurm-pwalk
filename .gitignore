@@ -2,11 +2,11 @@
 csv_[0-9]*
 output_[0-9]*
 # ignore scripts dirs
-before_scripts.d
-after_scripts.d
-remove_scripts.d
-# our owner script
-get_owner.sh
-new_get_owner.sh
+after_scripts.d/
+before_scripts.d/
 # any stale ownership clones
-storage_chargeback_ownership_*
+storage_chargeback_ownership*
+# startup script
+start_storcrawl.sh
+# obvious
+test.sh
