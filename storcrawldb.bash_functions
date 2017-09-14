@@ -113,8 +113,7 @@ function build_folder_table {
       folder="$line"
       ;;
     esac
-    my_folder_id=$(add_folder $folder $owner)
-    echo "$folder added with id $my_folder_id and owner $owner"
+    add_folder "${folder}" "${owner}"
   done
 }
 
@@ -134,7 +133,7 @@ function find_mount {
 # export=$(get_export ${folder_name})
 function get_export {
   # returns device name for direct-attach storage
-  mySource=find_mount "${1}"
+  mySource=$(find_mount "${1}")
   echo $mySource | grep -q ':'
   if [ $? -eq 0 ]
   then
@@ -146,7 +145,7 @@ function get_export {
 
 # server=$(get_server ${folder_name})
 function get_server {
-  myServer=find_mount "${1}"
+  myServer=$(find_mount "${1}")
   echo $myServer | grep -q ':'
   if [ $? -eq 0 ]
   then

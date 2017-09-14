@@ -349,6 +349,7 @@ function db_add_folder {
                            (folder,fs_id,owner)
                           VALUES ('${folder}','${fs_id}', '${own}')"
   storcrawl_log "add ${folder}, ${fs_id}, ${own} exit" "${?}"
+  echo "added ${folder} (${fs_id}), ${own}"
 }
 
 # folder_crawl_finish ${folder_id}
