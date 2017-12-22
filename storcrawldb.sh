@@ -7,7 +7,7 @@ DIRNAME=$(dirname $0)
 source $DIRNAME/storcrawldb.config
 
 ## source functions
-source $DIRNAME/storcrawldb.bash_functions
+source $DIRNAME/${bash_functions_file}
 source $DIRNAME/${db_functions_file}
 source $DIRNAME/${scheduler_functions_file}
 

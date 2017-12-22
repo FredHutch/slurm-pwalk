@@ -13,7 +13,7 @@ export CRAWL_JOB_ARRAY_MAX_SIZE=1000
 
 # sbatch command line arguments
 sbatch_partition="boneyard"
-sbatch_mail_type="BEGIN,END,FAIL"
+sbatch_mail_type="FAIL"
 sbatch_mail_user="bmcgough"
 sbatch_time="1-0"   # days-hours
 # pwalk parallelizes, so we run one job per folder

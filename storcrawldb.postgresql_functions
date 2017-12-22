@@ -206,14 +206,14 @@ function create_storcrawldb_views {
   psql $conn -t -A -c "CREATE MATERIALIZED VIEW folders AS
                        SELECT
                        ROUND(
-                         ${STORCRAWLDB_FILE_TABLE}.sum/1024.0)
+                         ${CRAWL_FILE_TABLE}.sum/1024.0)
                        AS kb,
-                       ${STORCRAWLDB_FILE_TABLE}.filename
+                       ${CRAWL_FILE_TABLE}.filename
                        AS foldername
-                       FROM ${STORCRAWLDB_FILE_TABLE}
+                       FROM ${CRAWL_FILE_TABLE}
                        WHERE
-                       ${STORCRAWLDB_FILE_TABLE}.count > '-1'::integer
-                       AND ${STORCRAWLDB_FILE_TABLE}.sum > 0"
+                       ${CRAWL_FILE_TABLE}.count > '-1'::integer
+                       AND ${CRAWL_FILE_TABLE}.sum > 0"
   psql $conn -t -A -c "GRANT SELECT ON folders TO $db_ro_user"
 }
 

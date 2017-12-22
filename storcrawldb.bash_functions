@@ -159,10 +159,10 @@ function get_server {
 function add_folder {
   local folder="${1}"
   local owner="${2}"
-  local server=$(get_server ${folder})
-  local export=$(get_export ${folder})
-  local fs_id=$(get_fs_id ${server} ${export})
-  db_add_folder ${folder} ${fs_id} ${owner}
+  local server=$(get_server "${folder}")
+  local export=$(get_export "${folder}")
+  local fs_id=$(get_fs_id "${server}" "${export}")
+  db_add_folder "${folder}" "${fs_id}" "${owner}"
 }
 
 # wrapper functions (call db for now)
