@@ -51,17 +51,38 @@ export_env "$my_tag"
 function storcrawl_start {
 
   echo "storcrawldb running with action start"
+  slack_text="Crawl ${CRAWL_TAG}:"
   init_db
   check_tag
   check_last_crawl
   init_crawl
-  storcrawl_log "action" "start"
-  build_folder_table
+  storcrawl_log "crawl start"
+  folder_count=$(build_folder_table)
+  slack_text="${slack_text} ${folder_count} folders"
   set_job_array_size
   run_scripts "${before_script_dir}"
   check_output_dirs
   run_crawl_jobs
+  slack_msg "${slack_text}"
   run_cleanup_job
+  #run_monitor_job
+  log_time=$(date +%Y%m%d%H%M%S)
+  while true
+  do
+    jobs_running=$($queue_cmd --partition=${sbatch_partition} --name ${sbatch_job_name} -o %A -h | wc -l)
+    if [ "$jobs_running" -eq "0" ]
+    then
+      exit 0
+    fi
+    loop_time=$(date +%Y%m%d%H%M%S)
+    let elapsed_time="${loop_time}-${log_time}"
+    if [ "${elapsed_time}" -gt "${monitor_log_interval}" ]
+    then
+      slack_msg "${jobs_running} jobs running"
+      log_time=$loop_time
+    fi
+    sleep ${monitor_check_interval}
+  done
 
 }
 
@@ -69,37 +90,72 @@ function storcrawl_start {
 function storcrawl_pwalk {
 
   echo "storcrawldb running with action crawl"
-  storcrawl_log "action" "crawl"
+  storcrawl_log "crawl pwalk"
   check_array
   check_exec $CRAWL_DB_CMD
   check_exec $CRAWL_SCHEDULER_CMD
   check_exec $CRAWL_PWALK_CMD
   check_exec $CRAWL_CSVQUOTE_CMD
+  export TMPDIR="${SCRATCH}"
 
   id=$(get_folder_id)
+  if [ -z "$id" ]
+  then
+    echo "no folders found"
+    exit 0
+  fi
   name=$(get_folder_detail ${id} "folder")
   owner=$(get_folder_detail ${id} "owner")
   fs_id=$(get_folder_detail ${id} "fs_id")
-  out="${fs_id}_$(echo ${name} | tr '/' '_')"
+  out="${fs_id}$(echo ${name} | tr '/' '_')"
 
-  echo "storcrawldb running pwalk on folder ${name} to output ${out}"
-  run_pwalk ${name} ${out}
-  import_crawl_csv ${out} ${fs_id} ${owner}
-  folder_crawl_finish ${id}
+  echo "DEBUG: storcrawldb running pwalk on folder ${name} to output ${out}"
+  run_pwalk "${name}" "${out}"
+  import_crawl_csv "${out}" "${fs_id}" "${owner}"
+  folder_crawl_finish "${id}"
 
 } 
+
+# monitor jobs during crawl
+function storcrawl_monitor {
+  echo "storcrawldb running with action monitor"
+  storcrawl_log "crawl monitor start"
+
+  log_time=$(date +%Y%m%d%H%M%S)
+  sbatch_job_name="${sbatch_job_name_prefix}${CRAWL_TAG}"
+
+  storcrawl_log "monitoring ${sbatch_job_name} jobs"
+
+  while true
+  do
+    jobs_running=$($queue_cmd --partition=${sbatch_partition} --name ${sbatch_job_name} -o %A -h | wc -l)
+    if [ "$jobs_running" -eq "0" ]
+    then
+      exit 0
+    fi
+    loop_time=$(date +%Y%m%d%H%M%S)
+    elapsed_time=$((${loop_time}-${log_time}))
+    if [ "${elapsed_time}" -gt "${monitor_log_interval}" ]
+    then
+      slack_msg "${jobs_running} jobs running"
+      log_time=$loop_time
+    fi
+    sleep ${monitor_check_interval}
+  done
+}
 
 # known as cleanup, this is run by one job at the end of the crawl
 function storcrawl_tidy {
 
   echo "storcrawldb running with action tidy"
-  storcrawl_log "action" "tidy"
+  storcrawl_log "crawl housekeeping start"
   generate_report
-  update_ro_grants
   create_storcrawldb_views
+  update_ro_grants
   clean_tables
   # archive here
   run_scripts "${after_script_dir}"
+  slack_report
 
 }
 
@@ -141,6 +197,9 @@ then
 elif [ "$storcrawl_action" = "crawl" ]
 then
   storcrawl_pwalk
+elif [ "$storcrawl_action" = "monitor" ]
+then
+  storcrawl_monitor
 elif [ "$storcrawl_action" = "cleanup" ]
 then
   storcrawl_tidy

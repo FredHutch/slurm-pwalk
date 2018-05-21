@@ -33,7 +33,7 @@ function create_source_table {
                           export TEXT,
                           PRIMARY KEY(id),
                           unique (server, export))"
-  storcrawl_log "create source table exit" "${?}"
+  storcrawl_log "create source table exit ${?}"
 }
 
 function create_file_table {
@@ -58,7 +58,7 @@ function create_file_table {
                           st_ctime DOUBLE PRECISION NOT NULL,
                           count INT NOT NULL,
                           sum BIGINT NOT NULL)"
-  storcrawl_log "create source table exit" "${?}"
+  storcrawl_log "create file table exit ${?}"
   #psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(fs_id,st_ino)"
   psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(owner)"
   #psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(filename)"
@@ -95,7 +95,7 @@ function create_folder_table {
                           folder TEXT NOT NULL,
                           owner TEXT,
                           PRIMARY KEY(id))"
-  storcrawl_log "create folder table exit" "${?}"
+  storcrawl_log "create folder table exit ${?}"
 }
 
 function create_report_table {
@@ -106,7 +106,7 @@ function create_report_table {
                           key TEXT NOT NULL,
                           value TEXT NOT NULL,
                           PRIMARY KEY(id))"
-  storcrawl_log "create report table exit" "${?}"
+  storcrawl_log "create report table exit ${?}"
 }
 
 function create_storcrawldb_views {
@@ -134,7 +134,12 @@ function create_storcrawldb_views {
                             sum
                           FROM
                             $CRAWL_FILE_TABLE"
-  storcrawl_log "create ${CRAWL_VIEW} exit" "${?}"
+  exit_status="${?}"
+  storcrawl_log "create ${CRAWL_VIEW} exit ${exit_status}"
+  if [[ "$exit_status" -ne "0" ]]
+  then
+    echo "create ${CRAWL_VIEW} exit status was ${exit_status}" | mail -s "storcrawl file_metadata view creation failed" scicomp@fredhutch.org
+  fi
 
   # materialized view of owner report
   owner_view=$(psql $conn -t -A -c "SELECT relkind from pg_class
@@ -142,7 +147,7 @@ function create_storcrawldb_views {
   if [ "${owner_view}" == "m" ]
   then
     psql $conn -c "DROP MATERIALIZED VIEW usage_by_owner"
-    storcrawl_log "drop usage_by_owner view exit" "${?}"
+    storcrawl_log "drop usage_by_owner view exit ${?}"
   fi
   psql $conn -c "CREATE MATERIALIZED VIEW usage_by_owner AS
                    SELECT
@@ -155,9 +160,38 @@ function create_storcrawldb_views {
                    owner != 'UNKNOWN'
                    GROUP BY owner
                    HAVING sum(sum)>1073741824"
-  storcrawl_log "create usage_by_owner view exit" "${?}"
+  storcrawl_log "create usage_by_owner view exit ${?}"
   psql $conn -c "GRANT SELECT ON usage_by_owner TO $db_ro_user"
-  storcrawl_log "grant on usage_by_owner view to ${db_ro_user} exit" "${?}"
+  storcrawl_log "grant on usage_by_owner view to ${db_ro_user} exit ${?}"
+
+  # materialized view of last 7 days changed or created
+  last_week=$(psql $conn -t -A -c "SELECT relkind from pg_class
+                                    WHERE relname = 'last_7_days_changes'")
+  if [ "${last_week}" == "m" ]
+  then
+    psql $conn -c "DROP MATERIALIZED VIEW last_7_days_changes"
+    storcrawl_log "drop last_7_days_changes view exit ${?}"
+  fi
+  psql $conn -c "CREATE MATERIALIZED VIEW last_7_days_changes AS
+                   SELECT
+                   owner,
+                   filename,
+                   fileextension,
+                   st_uid as uid,
+                   st_gid as gid,
+                   st_size,
+                   st_atime as atime,
+                   st_mtime as mtime,
+                   st_ctime as ctime
+                   FROM ${CRAWL_FILE_TABLE}
+                   WHERE
+                   (st_mtime > extract(epoch from now() - INTERVAL '7 DAYS')) OR
+                   (st_ctime > extract(epoch from now() - INTERVAL '7 DAYS'))
+                   ORDER BY
+                   st_size DESC"
+  storcrawl_log "create last_7_days_changes view exit ${?}"
+  psql $conn -c "GRANT SELECT ON last_7_days_changes TO $db_ro_user"
+  storcrawl_log "grant on last_7_days_changes view to ${db_ro_user} exit ${?}"
 
   # materialized view of large (>1GB) folders
   # create new with temp name, then rename and grant
@@ -166,7 +200,7 @@ function create_storcrawldb_views {
   if [ "${temp_view}" == "m" ]
   then
     psql $conn -c "DROP MATERIALIZED VIEW tmp_bf"
-    storcrawl_log "drop tmp_bf view exit" "${?}"
+    storcrawl_log "drop tmp_bf view exit ${?}"
   fi
   psql $conn -c "CREATE MATERIALIZED VIEW tmp_bf AS
                    SELECT
@@ -186,7 +220,7 @@ function create_storcrawldb_views {
                    fm.count > -1 AND
                    fm.sum > 1073741824 AND
                    fm.filename NOT LIKE '/home/%'"
-  storcrawl_log "create tmp_bf view exit" "${?}"
+  storcrawl_log "create tmp_bf view exit ${?}"
 
   # can't drop materialized views conditionally, so check to avoid error
   folder_view=$(psql $conn -t -A -c "SELECT relkind from pg_class
@@ -194,15 +228,20 @@ function create_storcrawldb_views {
   if [ "${folder_view}" == "m" ]
   then
     psql $conn -c "DROP MATERIALIZED VIEW big_folders"
-    storcrawl_log "drop big_folders view exit" "${?}"
+    storcrawl_log "drop big_folders view exit ${?}"
   fi
   psql $conn -c "ALTER MATERIALIZED VIEW tmp_bf RENAME TO big_folders"
-  storcrawl_log "alter tmp_bf view rename to big_folders exit" "${?}"
+  storcrawl_log "alter tmp_bf view rename to big_folders exit ${?}"
   psql $conn -c "GRANT SELECT ON big_folders TO $db_ro_user"
-  storcrawl_log "grant on big_folders view to $db_ro_user exit" "${?}"
+  storcrawl_log "grant on big_folders view to $db_ro_user exit ${?}"
 
   # create 'folders' view for dudb tool
-  psql $conn -t -A -c "DROP MATERIALIZED VIEW folders"
+  folders_view=$(psql $conn -t -A -c "SELECT relkind from pg_class
+                                      WHERE relname = 'folders'")
+  if [ "${folders_view}" = "m" ]
+  then
+    psql $conn -t -A -c "DROP MATERIALIZED VIEW folders"
+  fi
   psql $conn -t -A -c "CREATE MATERIALIZED VIEW folders AS
                        SELECT
                        ROUND(
@@ -237,32 +276,36 @@ function update_ro_grants {
   then
     psql $conn -c "CREATE ROLE ${db_ro_user}
                    LOGIN PASSWORD '${db_ro_password}'"
-    storcrawl_log "second create role ${db_ro_user} exit" "${?}"
+    storcrawl_log "second create role ${db_ro_user} exit ${?}"
   fi
   psql $conn -c "GRANT SELECT ON $CRAWL_FILE_TABLE TO $db_ro_user"
-  storcrawl_log "grant on ${CRAWL_FILE_TABLE} to ${db_ro_user} exit" "${?}"
+  storcrawl_log "grant on ${CRAWL_FILE_TABLE} to ${db_ro_user} exit ${?}"
   psql $conn -c "GRANT SELECT ON $CRAWL_SOURCE_TABLE TO $db_ro_user"
-  storcrawl_log "grant on ${CRAWL_SOURCE_TABLE} to ${db_ro_user} exit" "${?}"
+  storcrawl_log "grant on ${CRAWL_SOURCE_TABLE} to ${db_ro_user} exit ${?}"
   psql $conn -c "GRANT SELECT ON $CRAWL_FOLDER_TABLE TO $db_ro_user"
-  storcrawl_log "grant on ${CRAWL_FOLDER_TABLE} to ${db_ro_user} exit" "${?}"
+  storcrawl_log "grant on ${CRAWL_FOLDER_TABLE} to ${db_ro_user} exit ${?}"
   psql $conn -c "GRANT SELECT ON $CRAWL_DB_LOG_TABLE TO $db_ro_user"
-  storcrawl_log "grant on ${CRAWL_DB_LOG_TABLE} to ${db_ro_user} exit" "${?}"
+  storcrawl_log "grant on ${CRAWL_DB_LOG_TABLE} to ${db_ro_user} exit ${?}"
   psql $conn -c "GRANT SELECT ON $CRAWL_REPORT_TABLE TO $db_ro_user"
-  storcrawl_log "grant on ${CRAWL_REPORT_TABLE} to ${db_ro_user} exit" "${?}"
+  storcrawl_log "grant on ${CRAWL_REPORT_TABLE} to ${db_ro_user} exit ${?}"
   psql $conn -c "GRANT SELECT ON $CRAWL_VIEW TO $db_ro_user"
-  storcrawl_log "grant on ${CRAWL_VIEW} to ${db_ro_user} exit" "${?}"
+  storcrawl_log "grant on ${CRAWL_VIEW} to ${db_ro_user} exit ${?}"
+  psql $conn -c "GRANT SELECT ON uid_mapping TO $db_ro_user"
+  storcrawl_log "grant on uid_mapping to ${db_ro_user} exit ${?}"
+  psql $conn -c "GRANT SELECT ON gid_mapping TO $db_ro_user"
+  storcrawl_log "grant on gid_mapping to ${db_ro_user} exit ${?}"
 }
 
 ## drops
 
 function drop_table {
-  psql $conn -c "DROP TABLE IF EXISTS $1"
-  storcrawl_log "Drop table $1 exit" "${?}"
+  psql $conn -c "DROP TABLE IF EXISTS $1 CASCADE"
+  storcrawl_log "Drop table $1 exit ${?}"
 }
 
 function drop_view {
   psql $conn -c "DROP VIEW $1"
-  storcrawl_log "Drop view $1 exit" "${?}"
+  storcrawl_log "Drop view $1 exit ${?}"
 }
 
 ## queries
@@ -348,8 +391,8 @@ function db_add_folder {
                           ${CRAWL_FOLDER_TABLE}
                            (folder,fs_id,owner)
                           VALUES ('${folder}','${fs_id}', '${own}')"
-  storcrawl_log "add ${folder}, ${fs_id}, ${own} exit" "${?}"
-  echo "added ${folder} (${fs_id}), ${own}"
+  storcrawl_log "add ${folder}, ${fs_id}, ${own} exit ${?}"
+  #echo "added ${folder} (${fs_id}), ${own}"
 }
 
 # folder_crawl_finish ${folder_id}
@@ -358,19 +401,19 @@ function folder_crawl_finish {
   psql $conn -1 -t -A -c "UPDATE ${CRAWL_FOLDER_TABLE}
                           SET finished = current_timestamp
                           WHERE id = ${1}"
-  storcrawl_log "finish folder ${1} exit" "${?}"
+  storcrawl_log "finish folder ${1} exit ${?}"
 }
 
 # folder_id=$(db_get_folder_id)
+# parallel safe
+# gets "next" unstarted folder, marking it started
 function db_get_folder_id {
-  # atomically get folder id
-  # implies folder_crawl_start
   psql $conn -1 -t -A -c "
-    LOCK TABLE $CRAWL_FOLDER_TABLE
+    LOCK TABLE ${CRAWL_FOLDER_TABLE}
       IN ACCESS EXCLUSIVE MODE;
-    UPDATE $CRAWL_FOLDER_TABLE
+    UPDATE ${CRAWL_FOLDER_TABLE}
       SET started=current_timestamp
-      WHERE id = (SELECT id FROM $CRAWL_FOLDER_TABLE
+      WHERE id = (SELECT id FROM ${CRAWL_FOLDER_TABLE}
         WHERE started IS NULL LIMIT 1)
       RETURNING id"
 }
@@ -378,7 +421,7 @@ function db_get_folder_id {
 # owner=$(get_folder_detail $folder_id "owner")
 function db_get_folder_detail {
   psql $conn -1 -t -A -c "
-    SELECT $2 from $CRAWL_FOLDER_TABLE
+    SELECT $2 from ${CRAWL_FOLDER_TABLE}
       WHERE id = $1"
 }
 
@@ -444,8 +487,7 @@ function remove_views {
 }
 
 function print_log {
-  psql $conn -t -A -F, -c "SELECT * FROM ${CRAWL_DB_LOG_TABLE}
-                                    ORDER BY timestamp DESC"
+  psql $conn -t -A -F, -c "SELECT * FROM ${CRAWL_DB_LOG_TABLE}"
 }
 
 function print_report {
@@ -479,14 +521,14 @@ function init_crawl {
   for v in $(compgen -A variable | grep CRAWL)
   do
     eval v_val=\$$v
-    storcrawl_log "init ENV VAR ${v}" "${v_val}"
+    storcrawl_log "init ENV VAR ${v} ${v_val}"
   done
 }
 
 function drop_all_tables_for_tag {
   for i in $source_tbl $file_tbl $folder_tbl $log_tbl $report_tbl
   do
-    drop_table "$i$1"
+    drop_table "${i}${1}"
   done
 }
 
@@ -510,8 +552,8 @@ function import_crawl_csv {
                            filename,fileextension,st_uid,st_gid,st_size,
                            st_dev,st_blocks,st_nlink,st_mode,st_atime,
                            st_mtime,st_ctime,count,sum)
-                        FROM STDIN WITH csv ESCAPE '\'"
-  storcrawl_log "Copy exit" "${?}"
+                        FROM STDIN"
+  storcrawl_log "Copy exit ${?}"
 }
 
 function clean_tables {
@@ -539,6 +581,11 @@ function owner_report {
                                     owner, sum(sum) AS tb
                                   FROM ${file_tbl}$1
                                     GROUP BY owner"
+}
+
+function slack_report {
+  slack_text=$(psql $conn -t -A -c "SELECT * from ${CRAWL_REPORT_TABLE}")
+  slack_msg "${slack_text}"
 }
 
 function generate_report {
