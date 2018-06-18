@@ -8,9 +8,9 @@ module load PostgreSQL/9.6.1-foss-2016b
 # you will need to create ~/.pgpass with the appropriate credentials in it
 db_host="mydb"
 db_port=32086
-#db_port=32092
+#db_port=32128
 database="storcrawldb"
-#database="storcrawl-dev"
+#database="bmcgough-storcrawl-test"
 db_user="storcrawl_user"
 
 # ro user will be created and granted ro perms on DB
@@ -33,13 +33,16 @@ function create_source_table {
                           export TEXT,
                           PRIMARY KEY(id),
                           unique (server, export))"
+  # prime with 0 id entry as fallback when we can't find the mount info
+  psql $conn -c "INSERT INTO ${CRAWL_SOURCE_TABLE}(server,export)
+                   VALUES('notfound','notfound')"
   storcrawl_log "create source table exit ${?}"
 }
 
 function create_file_table {
   # trying single table again
+                          #fs_id INT NOT NULL,
   psql $conn -c "CREATE TABLE IF NOT EXISTS ${CRAWL_FILE_TABLE}(
-                          fs_id INT NOT NULL,
                           owner TEXT,
                           st_ino BIGINT NOT NULL,
                           parent_inode BIGINT NOT NULL,
@@ -61,7 +64,7 @@ function create_file_table {
   storcrawl_log "create file table exit ${?}"
   #psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(fs_id,st_ino)"
   psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(owner)"
-  #psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(filename)"
+  psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(filename)"
   #psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(fileextension)"
   psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(st_uid,st_gid)"
   psql $conn -c "CREATE INDEX ON ${CRAWL_FILE_TABLE}(st_atime,st_mtime)"
@@ -85,15 +88,16 @@ function create_log_table {
 
 function create_folder_table {
   # per crawl table of crawl folers/paths
+                          #fs_id INT
+                            #REFERENCES ${CRAWL_SOURCE_TABLE} (id),
   psql $conn -c "CREATE TABLE IF NOT EXISTS ${CRAWL_FOLDER_TABLE}(
                           id SERIAL,
-                          fs_id INT NOT NULL
-                            REFERENCES ${CRAWL_SOURCE_TABLE} (id),
                           added TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
                           started TIMESTAMP WITH TIME ZONE,
                           finished TIMESTAMP WITH TIME ZONE,
                           folder TEXT NOT NULL,
                           owner TEXT,
+                          job_id TEXT,
                           PRIMARY KEY(id))"
   storcrawl_log "create folder table exit ${?}"
 }
@@ -280,8 +284,8 @@ function update_ro_grants {
   fi
   psql $conn -c "GRANT SELECT ON $CRAWL_FILE_TABLE TO $db_ro_user"
   storcrawl_log "grant on ${CRAWL_FILE_TABLE} to ${db_ro_user} exit ${?}"
-  psql $conn -c "GRANT SELECT ON $CRAWL_SOURCE_TABLE TO $db_ro_user"
-  storcrawl_log "grant on ${CRAWL_SOURCE_TABLE} to ${db_ro_user} exit ${?}"
+  #psql $conn -c "GRANT SELECT ON $CRAWL_SOURCE_TABLE TO $db_ro_user"
+  #storcrawl_log "grant on ${CRAWL_SOURCE_TABLE} to ${db_ro_user} exit ${?}"
   psql $conn -c "GRANT SELECT ON $CRAWL_FOLDER_TABLE TO $db_ro_user"
   storcrawl_log "grant on ${CRAWL_FOLDER_TABLE} to ${db_ro_user} exit ${?}"
   psql $conn -c "GRANT SELECT ON $CRAWL_DB_LOG_TABLE TO $db_ro_user"
@@ -375,24 +379,34 @@ function db_get_fs_id {
                                  ON CONFLICT (server,export) DO UPDATE
                                    SET server='${1}', export='${2}'
                                    RETURNING id"
-  storcrawl_log "server ${1} export ${2} id ${id} exit" "${?}"
+  storcrawl_log "server ${1} export ${2} id ${id} exit ${?}"
 }
 
-# my_id=$(db_add_folder ${folder} ${fs_id} [${owner}])
+# my_id=$(db_add_folder ${folder} [${owner}])
 function db_add_folder {
   local folder="${1}"
-  local fs_id="${2}"
   local own=""
-  if ! [ -z "${3}" ]
+  if ! [ -z "${2}" ]
   then
-    own="${3}"
+    own="${2}"
   fi
   psql $conn -1 -t -A -c "INSERT INTO
                           ${CRAWL_FOLDER_TABLE}
-                           (folder,fs_id,owner)
-                          VALUES ('${folder}','${fs_id}', '${own}')"
-  storcrawl_log "add ${folder}, ${fs_id}, ${own} exit ${?}"
+                           (folder,owner)
+                          VALUES ('${folder}','${own}')"
+  storcrawl_log "add ${folder}, ${own} exit ${?}"
   #echo "added ${folder} (${fs_id}), ${own}"
+}
+
+# add_folder_fs_id ${folder_id} ${fs_id}
+function db_add_folder_fs_id {
+  local folder_id="${1}"
+  local fs_id="${2}"
+  folder=$(psql $conn -1 -t -A -c "UPDATE ${CRAWL_FOLDER_TABLE}
+                          SET fs_id = ${fs_id}
+                          WHERE id = ${folder_id}
+                          RETURNING folder")
+  storcrawl_log "updated folder ${folder}(${folder_id}) with fs_id ${fs_id}"
 }
 
 # folder_crawl_finish ${folder_id}
@@ -412,7 +426,8 @@ function db_get_folder_id {
     LOCK TABLE ${CRAWL_FOLDER_TABLE}
       IN ACCESS EXCLUSIVE MODE;
     UPDATE ${CRAWL_FOLDER_TABLE}
-      SET started=current_timestamp
+      SET started=current_timestamp,
+          job_id='${SLURM_JOB_ID}'
       WHERE id = (SELECT id FROM ${CRAWL_FOLDER_TABLE}
         WHERE started IS NULL LIMIT 1)
       RETURNING id"
@@ -437,7 +452,7 @@ function set_job_array_size {
 # build_exclusion_list_file ${folder_name} ${excl_file_name}
 function build_exclusion_list_file {
   psql $conn -t -A -c "SELECT folder from ${CRAWL_FOLDER_TABLE}
-                       WHERE folder like '${1}/_%'" > ${2}
+                       WHERE folder like '${1}/_%'" > "${2}"
 }
 
 function list_tags {
@@ -495,9 +510,17 @@ function print_report {
                                     FROM ${CRAWL_REPORT_TABLE}"
 }
 
-function print_folders {
+function print_folders_crawled {
   psql $conn -t -A -F, -c "SELECT folder
-                                    FROM ${CRAWL_FOLDER_TABLE}"
+                                    FROM ${CRAWL_FOLDER_TABLE}
+                                    WHERE started IS NOT NULL
+                                      AND finished IS NOT NULL"
+}
+
+function print_folders_not_crawled {
+  psql $conn -t -A -F, -c "SELECT folder
+                                    FROM ${CRAWL_FOLDER_TABLE}
+                                    WHERE finished IS NULL"
 }
 
 function report_kv {
@@ -539,21 +562,25 @@ function drop_all_tables_for_tag {
 #   count(files),sum(size)
 function import_crawl_csv {
   local csv_file="${1}.csv"
-  local fs_id="${2}"
-  local owner="${3}"
+  #local fs_id="${2}"
+  #local owner="${3}"
+  local owner="${2}"
 
+  storcrawl_log "$SLURM_JOB_ID copy: ${CRAWL_CSV_DIR}/${csv_file} owner=$owner"
   ${csvquote_cmd} "${CRAWL_CSV_DIR}/${csv_file}" |\
   uconv -s -i |\
   sort -t, -k 4,4 -u |\
-  awk -F, -v fsid="${fs_id}" -v own="${owner}" '{print fsid","own","$0}' |\
+  #awk -F, -v fsid="${fs_id}" -v own="${owner}" '{print fsid","own","$0}' |\
+  awk -F, -v own="${owner}" '{print own","$0}' |\
   ${csvquote_cmd} -u |\
+                          #(fs_id,owner,st_ino,parent_inode,directory_depth,
   psql $conn -c "COPY ${CRAWL_FILE_TABLE}
-                          (fs_id,owner,st_ino,parent_inode,directory_depth,
+                          (owner,st_ino,parent_inode,directory_depth,
                            filename,fileextension,st_uid,st_gid,st_size,
                            st_dev,st_blocks,st_nlink,st_mode,st_atime,
                            st_mtime,st_ctime,count,sum)
-                        FROM STDIN"
-  storcrawl_log "Copy exit ${?}"
+                        FROM STDIN CSV"
+  storcrawl_log "$SLURM_JOB_ID copy exit: ${?}"
 }
 
 function clean_tables {
@@ -584,26 +611,31 @@ function owner_report {
 }
 
 function slack_report {
-  slack_text=$(psql $conn -t -A -c "SELECT * from ${CRAWL_REPORT_TABLE}")
+  slack_text=$(psql $conn -t -A -F: -c "SELECT key,value from ${CRAWL_REPORT_TABLE}")
   slack_msg "${slack_text}"
 }
 
 function generate_report {
   report_kv "tag" "$CRAWL_TAG"
-  report_kv "total_sources" $(psql $conn -t -A -c "SELECT
-                                                   count(*)
-                                                   FROM
-                                                   ${CRAWL_SOURCE_TABLE}")
+  #report_kv "total_sources" $(psql $conn -t -A -c "SELECT
+                                                   #count(*)
+                                                   #FROM
+                                                   #${CRAWL_SOURCE_TABLE}")
   report_kv "total_files" $(psql $conn -t -A -c "SELECT
-count(*) FROM ${CRAWL_FILE_TABLE}")
+                            count(*) FROM ${CRAWL_FILE_TABLE}")
   report_kv "total_folders" $(psql $conn -t -A -c "SELECT
-count(*) FROM ${CRAWL_FOLDER_TABLE}")
-  report_kv "total_bytes" $(psql $conn -t -A -c "SELECT
-sum(sum) FROM ${CRAWL_FILE_TABLE}")
+                              count(*) FROM ${CRAWL_FOLDER_TABLE}")
+  report_kv "crawled_folders" $(psql $conn -t -A -c "SELECT
+                                count(*) FROM ${CRAWL_FOLDER_TABLE}
+                                WHERE started IS NOT NULL AND
+                                      finished IS NOT NULL")
+  #report_kv "total_bytes" $(psql $conn -t -A -c "SELECT
+                            #sum(sum) FROM ${CRAWL_FILE_TABLE}")
   report_kv "total_TB" $(psql $conn -t -A -c "SELECT
-round(sum(sum)/1024.0/1024.0/1024.0/1024.0,2) FROM ${CRAWL_FILE_TABLE}")
+                         round(sum(sum)/1024.0/1024.0/1024.0/1024.0,2)
+                         FROM ${CRAWL_FILE_TABLE}")
   report_kv "total_owners" $(psql $conn -t -A -c "SELECT
-count(DISTINCT owner) FROM ${CRAWL_FILE_TABLE}")
+                             count(DISTINCT owner) FROM ${CRAWL_FILE_TABLE}")
   report_kv "crawl_time" $(psql $conn -t -A -c "SELECT
                                                 MAX(finished)-MIN(started)
                                                 FROM ${CRAWL_FOLDER_TABLE}")
@@ -615,10 +647,5 @@ count(DISTINCT owner) FROM ${CRAWL_FILE_TABLE}")
                                              WHERE finished-started = 
                                              (SELECT MIN(finished-started)
                                               FROM ${CRAWL_FOLDER_TABLE})")
-  report_kv "slowest" $(psql $conn -t -A -c "SELECT folder
-                                             FROM ${CRAWL_FOLDER_TABLE}
-                                             WHERE finished-started = 
-                                             (SELECT MAX(finished-started)
-                                              FROM ${CRAWL_FOLDER_TABLE})")
-  report_kv "done" "done"
+  storcrawl_log "created report for tag ${CRAWL_TAG}"
 }

@@ -52,6 +52,7 @@ function storcrawl_start {
 
   echo "storcrawldb running with action start"
   slack_text="Crawl ${CRAWL_TAG}:"
+  clean_tables
   init_db
   check_tag
   check_last_crawl
@@ -63,22 +64,34 @@ function storcrawl_start {
   run_scripts "${before_script_dir}"
   check_output_dirs
   run_crawl_jobs
+  # wait for a bit for slurm to settle
+  sleep 60
   slack_msg "${slack_text}"
+  #run_requeue_job
   run_cleanup_job
+  sleep 60
   #run_monitor_job
   log_time=$(date +%Y%m%d%H%M%S)
   while true
   do
-    jobs_running=$($queue_cmd --partition=${sbatch_partition} --name ${sbatch_job_name} -o %A -h | wc -l)
+    jobs_running=$($queue_cmd --partition=${sbatch_partition} --name ${sbatch_job_name} --Format=name --noheader --array --state=RUNNING | wc -l)
+    jobs_pending=$($queue_cmd --partition=${sbatch_partition} --name ${sbatch_job_name} --Format=name --noheader --array --state=PENDING | wc -l)
+    jobs_failed=$($acct_cmd --partition=${sbatch_partition} --name ${sbatch_job_name} -s failed -n -S $(date +%Y-%m-%d -d '2 days ago') -E $(date +%Y-%m-%d) -X | wc -l)
     if [ "$jobs_running" -eq "0" ]
     then
+      # send email
+      ./storcrawldb.sh --action print-folders-not-crawled --tag ${CRAWL_TAG} \
+      | mail -s "storcrawl ${CRAWL_TAG} folders not crawled" bmcgough@fredhutch.org
+      echo "all jobs finished, exiting"
       exit 0
     fi
     loop_time=$(date +%Y%m%d%H%M%S)
     let elapsed_time="${loop_time}-${log_time}"
     if [ "${elapsed_time}" -gt "${monitor_log_interval}" ]
     then
-      slack_msg "${jobs_running} jobs running"
+      slack_msg "${slack_text} ${jobs_running}/${jobs_pending}/${jobs_failed} jobs running/pending/failed"
+      storcrawl_log "${jobs_running}/${jobs_pending}/${jobs_dailed} jobs running/pending/failed"
+      echo "${jobs_running}/${jobs_pending}/${jobs_failed} jobs running/pending/failed"
       log_time=$loop_time
     fi
     sleep ${monitor_check_interval}
@@ -90,7 +103,6 @@ function storcrawl_start {
 function storcrawl_pwalk {
 
   echo "storcrawldb running with action crawl"
-  storcrawl_log "crawl pwalk"
   check_array
   check_exec $CRAWL_DB_CMD
   check_exec $CRAWL_SCHEDULER_CMD
@@ -106,13 +118,26 @@ function storcrawl_pwalk {
   fi
   name=$(get_folder_detail ${id} "folder")
   owner=$(get_folder_detail ${id} "owner")
-  fs_id=$(get_folder_detail ${id} "fs_id")
-  out="${fs_id}$(echo ${name} | tr '/' '_')"
+  out="$(echo ${name} | tr '/' '_')"
 
-  echo "DEBUG: storcrawldb running pwalk on folder ${name} to output ${out}"
   run_pwalk "${name}" "${out}"
-  import_crawl_csv "${out}" "${fs_id}" "${owner}"
-  folder_crawl_finish "${id}"
+  if [ "${?}" -eq "0" ]
+  then
+    echo "crawl of ${name} successful"
+  else
+    echo "crawl of ${name} failed with exit ${?}"
+  fi
+  #fs_id=$(add_folder_fs_id "${name}")
+  #echo "DEBUG: importing data for ${name} under fs_id ${fs_id}"
+  #import_crawl_csv "${out}" "${fs_id}" "${owner}"
+  import_crawl_csv "${out}" "${owner}"
+  if [ "${?}" -eq "0" ]
+  then
+    echo "import of ${out} successful"
+    folder_crawl_finish "${id}"
+  else
+    echo "import of ${out} failed with exit ${?}"
+  fi
 
 } 
 
@@ -129,7 +154,7 @@ function storcrawl_monitor {
   while true
   do
     jobs_running=$($queue_cmd --partition=${sbatch_partition} --name ${sbatch_job_name} -o %A -h | wc -l)
-    if [ "$jobs_running" -eq "0" ]
+    if [ "${jobs_running}" -eq "0" ]
     then
       exit 0
     fi
@@ -144,15 +169,32 @@ function storcrawl_monitor {
   done
 }
 
+# requeue - run after initial job arrays are done to re-try failed folders
+function storcrawl_requeue {
+
+  echo "storcrawldb running with action requeue"
+  storcrawl_log "crawl requeue start"
+  if [ "${CRAWL_REQUEUE_NUM}" -le "${CRAWL_REQUEUE_LIMIT}" ]
+  then
+    run_crawl_jobs
+    export CRAWL_REQUEUE_NUM=$((${CRAWL_REQUEUE_NUM}+1))
+    run_requeue_job
+  else
+    run_cleanup_job
+  fi
+
+}
+
 # known as cleanup, this is run by one job at the end of the crawl
 function storcrawl_tidy {
 
   echo "storcrawldb running with action tidy"
+  slack_msg "crawl ${CRAWL_TAG}: housekeeping running"
   storcrawl_log "crawl housekeeping start"
   generate_report
   create_storcrawldb_views
   update_ro_grants
-  clean_tables
+  #clean_tables
   # archive here
   run_scripts "${after_script_dir}"
   slack_report
@@ -185,8 +227,13 @@ function print_report_for_tag {
 }
 
 # dump the folder/owner list of a given tag
-function print_folders_for_tag {
-  print_folders
+function print_folders_crawled_for_tag {
+  print_folders_crawled
+  exit
+}
+
+function print_folders_not_crawled_for_tag {
+  print_folders_not_crawled
   exit
 }
 
@@ -200,6 +247,9 @@ then
 elif [ "$storcrawl_action" = "monitor" ]
 then
   storcrawl_monitor
+elif [ "$storcrawl_action" = "requeue" ]
+then
+  storcrawl_requeue
 elif [ "$storcrawl_action" = "cleanup" ]
 then
   storcrawl_tidy
@@ -239,13 +289,20 @@ then
     fi
   fi
   owner_report $specified_tag
-elif [ "$storcrawl_action" = "print-folders" ]
+elif [ "$storcrawl_action" = "print-folders-crawled" ]
 then
   if [ -z "$specified_tag" ]
   then
     error_exit "Tag not specified."
   fi
-  print_folders_for_tag
+  print_folders_crawled_for_tag
+elif [ "$storcrawl_action" = "print-folders-not-crawled" ]
+then
+  if [ -z "$specified_tag" ]
+  then
+    error_exit "Tag not specified."
+  fi
+  print_folders_not_crawled_for_tag 
 else
   (>&2 echo "Invalid action specified: $storcrawl_action")
   usage

@@ -28,7 +28,8 @@ function usage {
   printf "    remove-tag - remove all tables related to tag specified with --tag parameter from DB\n"
   printf "    print-log - print logs for -tag parameter from DB\n"
   printf "    print-report - print report for -tag parameter from DB\n"
-  printf "    print-folders - print folder list for --tag parameter from DB\n"
+  printf "    print-folders-crawled - print folders crawled for --tag parameter from DB\n"
+  printf "    print-folders-not-crawled - print folders not crawled for --tag parameter from DB\n"
   printf "    print-owner-report - print space by owner report for --tag parameter from DB\n"
   printf "\n\n"
   exit 1
@@ -51,6 +52,8 @@ function export_env {
   export CRAWL_PWALK_CMD=${CRAWL_PWALK_CMD:=$pwalk_cmd}
   export CRAWL_SCHEDULER_CMD=${CRAWL_SCHEDULER_CMD:=$scheduler_cmd}
   export CRAWL_CSVQUOTE_CMD=${CRAWL_CVSQUOTE_CMD:=$csvquote_cmd}
+  export CRAWL_REQUEUE_NUM=${CRAWL_REQUEUE_NUM:=1}
+  export CRAWL_REQUEUE_LIMIT=${CRAWL_REQUEUE_LIMIT:=$requeue_limit}
 }
 
 # following builds a JSON log message and logs it
@@ -89,9 +92,9 @@ function storcrawl_log {
 function slack_msg {
   if [ -n "$slack_webhook_url" ]
   then
-    payload="{\"channel\":\"${slack_channel}\",\"text\":\"${1}\"}"
-    echo "DEBUG: slack payload is ${payload} and slack_webhook_url is ${slack_webhook_url}"
-    #curl -X POST --data-urlencode "payload=$payload" "$slack_webhook_url"
+    payload="{\"text\":\"${1}\"}"
+    #echo "DEBUG: slack payload is ${payload} and slack_webhook_url is ${slack_webhook_url}"
+    curl -X POST --data-urlencode "payload=$payload" "$slack_webhook_url"
   fi
 }
 
@@ -135,40 +138,39 @@ function build_folder_table {
 }
 
 # find_mount ${path}
-# uses findmnt to find source of path, recurses up tree until mount is found
-# as folders below the mount point may not allow non-root to see mount info
+# use `df` which is more reliable
+# return format: <hostname>[:server]:<export/device>
+# you get back "hostname:server:export or device" for network file systems and
+# "hostname:device" for local mounts - use accordingly
 function find_mount {
-  s=$(findmnt -n -o source --target "${1}")
-  if [ $? -eq 0 ]
-  then
-    echo "${s}"
-  else
-    find_mount $(dirname "${1}")
-  fi
+  hn=$(hostname)
+  fs=$(df --output=source "${1}" | tail -1)
+
+  echo "${hn}:${fs}"
 }
 
 # export=$(get_export ${folder_name})
 function get_export {
-  # returns device name for direct-attach storage
-  mySource=$(find_mount "${1}")
-  echo $mySource | grep -q ':'
-  if [ $? -eq 0 ]
+  # returns 2 or 3 fields
+  exp=$(find_mount "${1}" | awk -F: '{ print $NF }')
+  if [ "${exp}" == "" ]
   then
-    echo $mySource | cut -f2 -d:
+    storcrawl_log "found no export for ${1}"
+    echo ""
   else
-    echo $mySource
+    echo "${exp}"
   fi
 }
 
 # server=$(get_server ${folder_name})
 function get_server {
-  myServer=$(find_mount "${1}")
-  echo $myServer | grep -q ':'
-  if [ $? -eq 0 ]
+  # returns 2 or 3 fields
+  srv=$(find_mount "${1}" | awk -F: '{ if (NF>2) {print $2} else {print $1} }')
+  if [ "${srv}" == "" ]
   then
-    echo $myServer | cut -f1 -d:
+    storcrawl_log "found no server for ${1}"
   else
-    hostname
+    echo "${srv}"
   fi
 }
 
@@ -176,10 +178,19 @@ function get_server {
 function add_folder {
   local folder="${1}"
   local owner="${2}"
+  db_add_folder "${folder}" "${owner}"
+}
+
+# add_folder_fs_id $folder_name
+function add_folder_fs_id {
+
+  local folder="${1}"
   local server=$(get_server "${folder}")
   local export=$(get_export "${folder}")
   local fs_id=$(get_fs_id "${server}" "${export}")
-  db_add_folder "${folder}" "${fs_id}" "${owner}"
+  local folder_id=$(get_folder_id "${folder}")
+  db_add_folder_fs_id "${folder_id}" "${fs_id}"
+  echo "${fs_id}"
 }
 
 # wrapper functions (call db for now)
@@ -201,6 +212,10 @@ function run_crawl_jobs {
 
 function run_monitor_job {
   slurm_run_monitor_job ${@}
+}
+
+function run_requeue_job {
+  slurm_run_requeue_job ${@}
 }
 
 function run_cleanup_job {
@@ -256,9 +271,9 @@ function run_pwalk {
   local excl_file="${CRAWL_CSV_DIR}/${output_file}.exclusion_list"
   build_exclusion_list_file "${folder_name}" "${excl_file}"
   # run pwalk
-  echo "DEBUG: running: $pwalk_cmd $pwalk_opts --exclude ${excl_file} ${folder_name}"
+  storcrawl_log "$SLURM_JOB_ID running: $pwalk_cmd $pwalk_opts --exclude ${excl_file} ${folder_name}"
   $pwalk_cmd $pwalk_opts --exclude "${excl_file}" "${folder_name}" > "${csv_out}"
-  storcrawl_log "pwalk exit ${?}"
+  storcrawl_log "$SLURM_JOB_ID pwalk exit: ${?}"
 }
 
 # print error and exit

@@ -10,3 +10,5 @@ storage_chargeback_ownership*
 start_storcrawl.sh
 # obvious
 test.sh
+storcrawldb.stdout
+storcrawldb.stderr

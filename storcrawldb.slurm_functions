@@ -17,7 +17,7 @@ export CRAWL_JOB_ARRAY_MAX_SIZE=1000
 #sbatch_mail_user="bmcgough"
 #sbatch_time="1-0"   # days-hours
 # pwalk parallelizes, so we run one job per folder
-#sbatch_cpus_per_task="12"
+#sbatch_cpus_per_task="3"
 # the crawl tag will be appended to this to become job-name
 #sbatch_job_name_prefix="storcrawl_"
 
@@ -26,6 +26,8 @@ function slurm_run_crawl_jobs {
   sbatch_job_name="${sbatch_job_name_prefix}${CRAWL_TAG}"
   # chunk into array sets at array size limit
   num_job_arrays=$((${CRAWL_JOB_ARRAY_SIZE}/${CRAWL_JOB_ARRAY_MAX_SIZE}+1))
+  # set per-array job limit
+  array_simultaneous_tasks=$((${sbatch_simultaneous_tasks}/${num_job_arrays}))
   # loop through job arrays
   for i in $(seq 1 $num_job_arrays)
   do
@@ -38,7 +40,11 @@ function slurm_run_crawl_jobs {
     fi
 
     # build the command line
-    cmd="--array=1-${end_id}%${sbatch_simultaneous_tasks}"
+    cmd="--array=1-${end_id}%${array_simultaneous_tasks}"
+    if [ -n "${sbatch_mem}" ]
+    then
+      cmd="$cmd --mem=$sbatch_mem"
+    fi
     cmd="$cmd --partition=$sbatch_partition"
     cmd="$cmd --mail-type=$sbatch_mail_type"
     cmd="$cmd --mail-user=$sbatch_mail_user"
@@ -50,9 +56,7 @@ function slurm_run_crawl_jobs {
     cmd="$cmd --wrap=\"$0 --action crawl\""
 
     # run it
-    set -x
     sbatch_output=$(eval $sbatch_cmd $cmd)
-    set +x
 
     # check it
     if [ $? -eq 0 ]
@@ -69,6 +73,10 @@ function slurm_run_crawl_jobs {
 function slurm_run_monitor_job {
   # build the command line
   cmd="--partition=$sbatch_partition" 
+  if [ -n "${sbatch_mem}" ]
+  then
+    cmd="$cmd --mem=$sbatch_mem"
+  fi
   cmd="$cmd --mail-type=$sbatch_mail_type"
   cmd="$cmd --mail-user=$sbatch_mail_user"
   cmd="$cmd --time=$sbatch_time"
@@ -79,9 +87,7 @@ function slurm_run_monitor_job {
   cmd="$cmd --wrap=\"$0 --action monitor\""
 
   # run it
-  set -x
   sbatch_output=$(eval $sbatch_cmd $cmd)
-  set +x
 
   # check it
   if [ $? -eq 0 ]
@@ -93,25 +99,59 @@ function slurm_run_monitor_job {
   fi
 }
 
+# schedule the requeue job
+function slurm_run_requeue_job {
+  sbatch_job_name="${sbatch_job_name_prefix}${CRAWL_TAG}"
+  # build the command line
+  cmd="--partition=$sbatch_partition" 
+  if [ -n "${sbatch_mem}" ]
+  then
+    cmd="$cmd --mem=$sbatch_mem"
+  fi
+  cmd="$cmd --mail-type=$sbatch_mail_type"
+  cmd="$cmd --mail-user=$sbatch_mail_user"
+  cmd="$cmd --time=$sbatch_time"
+  cmd="$cmd --output=${CRAWL_OUTPUT_DIR}/output_requeue_%a.%J.stdout"
+  cmd="$cmd --error=${CRAWL_OUTPUT_DIR}/output_requeue_%a.%J.stderr"
+  cmd="$cmd --cpus-per-task=1"
+  cmd="$cmd --job-name=$sbatch_job_name"
+  cmd="$cmd --dependency=singleton"
+  cmd="$cmd --wrap=\"$0 --action requeue\""
+
+  # run it
+  sbatch_output=$(eval $sbatch_cmd $cmd)
+
+  # check it
+  if [ $? -eq 0 ]
+  then
+    echo "crawl requeue job launched: $sbatch_output"
+    storcrawl_log "crawl requeue job launched: $sbatch_output"
+  else
+    error_exit "Ooops, unable to launch requeue job, exiting..."
+  fi
+}
+
 # schedule the cleanup job
 function slurm_run_cleanup_job {
   sbatch_job_name="${sbatch_job_name_prefix}${CRAWL_TAG}"
   # build the command line
   cmd="--partition=$sbatch_partition" 
+  if [ -n "${sbatch_mem}" ]
+  then
+    cmd="$cmd --mem=$sbatch_mem"
+  fi
   cmd="$cmd --mail-type=$sbatch_mail_type"
   cmd="$cmd --mail-user=$sbatch_mail_user"
   cmd="$cmd --time=$sbatch_time"
   cmd="$cmd --output=${CRAWL_OUTPUT_DIR}/output_housekeeper_%a.%J.stdout"
   cmd="$cmd --error=${CRAWL_OUTPUT_DIR}/output_housekeeper_%a.%J.stderr"
-  cmd="$cmd --cpus-per-task=1"
+  cmd="$cmd --cpus-per-task=$sbatch_cpus_per_task"
   cmd="$cmd --job-name=$sbatch_job_name"
   cmd="$cmd --dependency=singleton"
   cmd="$cmd --wrap=\"$0 --action cleanup\""
 
   # run it
-  set -x
   sbatch_output=$(eval $sbatch_cmd $cmd)
-  set +x
 
   # check it
   if [ $? -eq 0 ]
