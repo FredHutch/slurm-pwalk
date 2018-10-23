@@ -8,9 +8,9 @@ module load PostgreSQL/9.6.1-foss-2016b
 # you will need to create ~/.pgpass with the appropriate credentials in it
 db_host="mydb"
 db_port=32086
-#db_port=32128
+#db_port=32134
 database="storcrawldb"
-#database="bmcgough-storcrawl-test"
+#database="storcrawl-scratch"
 db_user="storcrawl_user"
 
 # ro user will be created and granted ro perms on DB
@@ -167,6 +167,35 @@ function create_storcrawldb_views {
   storcrawl_log "create usage_by_owner view exit ${?}"
   psql $conn -c "GRANT SELECT ON usage_by_owner TO $db_ro_user"
   storcrawl_log "grant on usage_by_owner view to ${db_ro_user} exit ${?}"
+
+  # materialized view of last 24 hours changed or created
+  last_24=$(psql $conn -t -A -c "SELECT relkind from pg_class
+                                    WHERE relname = 'last_24_hours_changes'")
+  if [ "${last_24}" == "m" ]
+  then
+    psql $conn -c "DROP MATERIALIZED VIEW last_24_hours_changes"
+    storcrawl_log "drop last_24_hours_changes view exit ${?}"
+  fi
+  psql $conn -c "CREATE MATERIALIZED VIEW last_24_hours_changes AS
+                   SELECT
+                   owner,
+                   filename,
+                   fileextension,
+                   st_uid as uid,
+                   st_gid as gid,
+                   st_size,
+                   st_atime as atime,
+                   st_mtime as mtime,
+                   st_ctime as ctime
+                   FROM ${CRAWL_FILE_TABLE}
+                   WHERE
+                   (st_mtime > extract(epoch from now() - INTERVAL '1 DAY')) OR
+                   (st_ctime > extract(epoch from now() - INTERVAL '1 DAY'))
+                   ORDER BY
+                   st_size DESC"
+  storcrawl_log "create last_24_hours_changes view exit ${?}"
+  psql $conn -c "GRANT SELECT ON last_24_hours_changes TO $db_ro_user"
+  storcrawl_log "grant on last_24_hours_changes view to ${db_ro_user} exit ${?}"
 
   # materialized view of last 7 days changed or created
   last_week=$(psql $conn -t -A -c "SELECT relkind from pg_class
@@ -642,10 +671,5 @@ function generate_report {
   report_kv "avg_fldr_time" $(psql $conn -t -A -c "SELECT
                                                    AVG(finished-started)
                                                    FROM ${CRAWL_FOLDER_TABLE}")
-  report_kv "fastest" $(psql $conn -t -A -c "SELECT folder
-                                             FROM ${CRAWL_FOLDER_TABLE}
-                                             WHERE finished-started = 
-                                             (SELECT MIN(finished-started)
-                                              FROM ${CRAWL_FOLDER_TABLE})")
   storcrawl_log "created report for tag ${CRAWL_TAG}"
 }
