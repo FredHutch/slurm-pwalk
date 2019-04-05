@@ -4,6 +4,7 @@ output_[0-9]*
 # ignore scripts dirs
 after_scripts.d/
 before_scripts.d/
+utils/
 # any stale ownership clones
 storage_chargeback_ownership*
 # startup script
@@ -12,3 +13,5 @@ start_storcrawl.sh
 test.sh
 storcrawldb.stdout
 storcrawldb.stderr
+# DS_Stores
+*DS_Store

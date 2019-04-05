@@ -640,6 +640,7 @@ function owner_report {
 }
 
 function slack_report {
+  echo "generating slack report..."
   slack_text=$(psql $conn -t -A -F: -c "SELECT key,value from ${CRAWL_REPORT_TABLE}")
   slack_msg "${slack_text}"
 }

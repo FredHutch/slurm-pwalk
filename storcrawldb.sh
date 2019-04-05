@@ -53,21 +53,26 @@ function storcrawl_start {
   echo "storcrawldb running with action start"
   slack_text="Crawl ${CRAWL_TAG}:"
   clean_tables
+  echo "setting up database"
   init_db
   check_tag
   check_last_crawl
   init_crawl
+  echo "set up crawl"
   storcrawl_log "crawl start"
   folder_count=$(build_folder_table)
   slack_text="${slack_text} ${folder_count} folders"
   set_job_array_size
+  echo "running before scripts"
   run_scripts "${before_script_dir}"
   check_output_dirs
+  echo "running crawl jobs"
   run_crawl_jobs
   # wait for a bit for slurm to settle
   sleep 60
   slack_msg "${slack_text}"
   #run_requeue_job
+  echo "running cleanup job"
   run_cleanup_job
   sleep 60
   #run_monitor_job
